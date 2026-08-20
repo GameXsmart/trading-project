@@ -1,0 +1,59 @@
+# The observation universe.
+#
+# `tier` drives ingestion priority and, later, how much analytical budget an asset
+# receives: tier 1 assets are polled on every timeframe, tier 2 on the slower ones.
+# `overrides` handles providers whose ticker differs from the canonical symbol.
+
+default_quote: USDT
+
+assets:
+  - symbol: BTC
+    name: Bitcoin
+    tier: 1
+    overrides: { kraken: XBTUSD, coingecko: bitcoin }
+
+  - symbol: ETH
+    name: Ethereum
+    tier: 1
+    overrides: { coingecko: ethereum }
+
+  - symbol: SOL
+    name: Solana
+    tier: 1
+    overrides: { coingecko: solana }
+
+  - symbol: BNB
+    name: BNB
+    tier: 2
+    # Coinbase does not list BNB; the provider manager fails over automatically.
+    overrides: { coingecko: binancecoin }
+
+  - symbol: XRP
+    name: XRP
+    tier: 2
+    overrides: { coingecko: ripple }
+
+  - symbol: ADA
+    name: Cardano
+    tier: 2
+    overrides: { coingecko: cardano }
+
+  - symbol: DOGE
+    name: Dogecoin
+    tier: 2
+    overrides: { coingecko: dogecoin }
+
+  - symbol: AVAX
+    name: Avalanche
+    tier: 2
+    overrides: { coingecko: avalanche-2 }
+
+  - symbol: LINK
+    name: Chainlink
+    tier: 2
+    overrides: { coingecko: chainlink }
+
+  - symbol: DOT
+    name: Polkadot
+    tier: 2
+    overrides: { coingecko: polkadot }

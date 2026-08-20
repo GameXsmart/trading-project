@@ -1,0 +1,87 @@
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "mie"
+version = "0.1.0"
+description = "Crypto Market Intelligence & Prediction Engine — analytical, never executes trades"
+readme = "README.md"
+requires-python = ">=3.12"
+license = { text = "MIT" }
+
+dependencies = [
+    "sqlalchemy>=2.0",
+    "aiosqlite>=0.20",
+    "httpx>=0.27",
+    "pydantic>=2.7",
+    "pydantic-settings>=2.3",
+    "structlog>=24.1",
+    "typer>=0.12",
+    "rich>=13.7",
+    "pyyaml>=6.0",
+    "tenacity>=8.3",
+]
+
+[project.optional-dependencies]
+# Production storage. SQLite is the default so the repo runs with no infrastructure.
+postgres = ["asyncpg>=0.29"]
+# Phases 2+; listed here so the intended stack is explicit, not installed by default.
+analysis = ["numpy>=1.26", "pandas>=2.2", "scipy>=1.13"]
+ml = ["scikit-learn>=1.5", "lightgbm>=4.3", "statsmodels>=0.14"]
+dev = [
+    "pytest>=8.2",
+    "pytest-asyncio>=0.23",
+    "pytest-cov>=5.0",
+    "ruff>=0.5",
+    "mypy>=1.10",
+]
+
+[project.scripts]
+mie = "mie.cli:main"
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.pytest.ini_options]
+# pythonpath lets the suite run straight from a clone, with no install step.
+pythonpath = ["src"]
+testpaths = ["tests"]
+# Offline by default: `pytest` must pass on a fresh clone with no network. The live
+# provider contract tests are opt-in via `pytest -m network` (the later -m wins).
+addopts = "-m 'not network'"
+asyncio_mode = "auto"
+asyncio_default_fixture_loop_scope = "function"
+markers = [
+    "network: hits live exchange APIs; deselect with -m 'not network'",
+]
+filterwarnings = ["error::DeprecationWarning:mie.*"]
+
+[tool.ruff]
+line-length = 100
+target-version = "py312"
+src = ["src", "tests"]
+
+[tool.ruff.lint]
+select = ["E", "F", "W", "I", "N", "UP", "B", "C4", "SIM", "RUF"]
+ignore = [
+    "E501",   # line length is enforced by the formatter, not the linter
+    "B008",   # typer's Option()-in-default is the documented idiom
+    "RUF012", # ClassVar annotations on ORM/mutable class attrs add noise here
+    "N818",   # ProviderUnavailable/RateLimited/NotSupported read better without "Error"
+    "RUF001", # the multiplication sign in prose and formulas is deliberate
+    "RUF002",
+]
+
+[tool.mypy]
+python_version = "3.12"
+packages = ["mie"]
+mypy_path = "src"
+warn_unused_ignores = true
+warn_redundant_casts = true
+disallow_untyped_defs = false
+plugins = ["pydantic.mypy"]
+
+[[tool.mypy.overrides]]
+module = ["yaml.*", "structlog.*"]
+ignore_missing_imports = true

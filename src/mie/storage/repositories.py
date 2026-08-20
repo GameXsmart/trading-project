@@ -1,0 +1,713 @@
+"""Repositories — the only code that speaks SQL.
+
+Keeping persistence behind these classes means the ingestion and analytical layers
+never build queries, and the dialect-specific upsert lives in exactly one place.
+"""
+
+from __future__ import annotations
+
+from collections.abc import Iterable, Sequence
+from datetime import datetime, timedelta
+from typing import Any, cast
+
+from sqlalchemy import CursorResult, delete, func, select
+from sqlalchemy.dialects.postgresql import insert as pg_insert
+from sqlalchemy.dialects.sqlite import insert as sqlite_insert
+from sqlalchemy.ext.asyncio import AsyncSession
+
+from mie.core.logging import get_logger
+from mie.core.timeframes import Timeframe, ensure_utc, grid, utcnow
+from mie.core.types import (
+    Candle,
+    FundingRate,
+    GlobalMetricsPoint,
+    IngestResult,
+    MarketType,
+    OpenInterestPoint,
+    QualityEvent,
+)
+from mie.storage.models import (
+    OHLCV,
+    Asset,
+    DataQualityEventRow,
+    DataSource,
+    FundingRateRow,
+    GlobalMetricsRow,
+    IngestRunRow,
+    Instrument,
+    OpenInterestRow,
+    SourceQualityScore,
+)
+
+log = get_logger(__name__)
+
+__all__ = [
+    "DerivativesRepository",
+    "GlobalMetricsRepository",
+    "IngestRunRepository",
+    "OHLCVRepository",
+    "QualityRepository",
+    "ReferenceRepository",
+]
+
+
+def _upsert(session: AsyncSession, table: Any) -> Any:
+    """Return the dialect-appropriate INSERT construct.
+
+    Both SQLite and Postgres implement ``ON CONFLICT DO UPDATE`` with the same
+    SQLAlchemy surface, so this is the whole of the portability shim.
+    """
+    dialect = session.get_bind().dialect.name
+    return pg_insert(table) if dialect == "postgresql" else sqlite_insert(table)
+
+
+class ReferenceRepository:
+    """Assets, sources and instruments.
+
+    Instrument lookups happen on every ingest batch, so resolved ids are cached in
+    process — the reference tables change on the order of once per deployment.
+    """
+
+    def __init__(self, session: AsyncSession) -> None:
+        self.session = session
+
+    _instrument_cache: dict[tuple[str, str, str], int] = {}
+
+    @classmethod
+    def clear_cache(cls) -> None:
+        cls._instrument_cache.clear()
+
+    async def ensure_asset(
+        self, symbol: str, name: str = "", tier: int = 2, meta: dict[str, Any] | None = None
+    ) -> Asset:
+        symbol = symbol.upper()
+        existing = await self.session.scalar(select(Asset).where(Asset.symbol == symbol))
+        if existing:
+            # Config is the source of truth for descriptive fields; refresh them.
+            if name and existing.name != name:
+                existing.name = name
+            if existing.tier != tier:
+                existing.tier = tier
+            return existing
+        asset = Asset(symbol=symbol, name=name or symbol, tier=tier, meta=meta or {})
+        self.session.add(asset)
+        await self.session.flush()
+        return asset
+
+    async def ensure_source(
+        self, name: str, kind: str = "exchange", priority: int = 100, enabled: bool = True
+    ) -> DataSource:
+        existing = await self.session.scalar(select(DataSource).where(DataSource.name == name))
+        if existing:
+            existing.priority = priority
+            existing.enabled = enabled
+            return existing
+        source = DataSource(name=name, kind=kind, priority=priority, enabled=enabled)
+        self.session.add(source)
+        await self.session.flush()
+        return source
+
+    async def ensure_instrument(
+        self,
+        asset_symbol: str,
+        source_name: str,
+        provider_symbol: str,
+        market_type: MarketType = MarketType.SPOT,
+        quote: str = "USDT",
+    ) -> int:
+        key = (asset_symbol.upper(), source_name, str(market_type))
+        cached = self._instrument_cache.get(key)
+        if cached is not None:
+            return cached
+
+        asset = await self.ensure_asset(asset_symbol)
+        source = await self.ensure_source(source_name)
+        stmt = select(Instrument).where(
+            Instrument.asset_id == asset.id,
+            Instrument.source_id == source.id,
+            Instrument.market_type == str(market_type),
+        )
+        instrument = await self.session.scalar(stmt)
+        if instrument is None:
+            instrument = Instrument(
+                asset_id=asset.id,
+                source_id=source.id,
+                provider_symbol=provider_symbol,
+                market_type=str(market_type),
+                quote=quote,
+            )
+            self.session.add(instrument)
+            await self.session.flush()
+        elif instrument.provider_symbol != provider_symbol:
+            instrument.provider_symbol = provider_symbol
+            await self.session.flush()
+
+        self._instrument_cache[key] = instrument.id
+        return instrument.id
+
+    async def instrument_id(
+        self, asset_symbol: str, source_name: str, market_type: MarketType = MarketType.SPOT
+    ) -> int | None:
+        key = (asset_symbol.upper(), source_name, str(market_type))
+        if key in self._instrument_cache:
+            return self._instrument_cache[key]
+        stmt = (
+            select(Instrument.id)
+            .join(Asset, Asset.id == Instrument.asset_id)
+            .join(DataSource, DataSource.id == Instrument.source_id)
+            .where(
+                Asset.symbol == asset_symbol.upper(),
+                DataSource.name == source_name,
+                Instrument.market_type == str(market_type),
+            )
+        )
+        found = await self.session.scalar(stmt)
+        if found is not None:
+            self._instrument_cache[key] = found
+        return found
+
+    async def list_assets(self, active_only: bool = True) -> Sequence[Asset]:
+        stmt = select(Asset).order_by(Asset.tier, Asset.symbol)
+        if active_only:
+            stmt = stmt.where(Asset.is_active.is_(True))
+        return (await self.session.scalars(stmt)).all()
+
+    async def list_sources(self) -> Sequence[DataSource]:
+        return (await self.session.scalars(select(DataSource).order_by(DataSource.priority))).all()
+
+
+class OHLCVRepository:
+    """Candle persistence and retrieval."""
+
+    def __init__(self, session: AsyncSession) -> None:
+        self.session = session
+        self.reference = ReferenceRepository(session)
+
+    async def upsert_candles(self, candles: Iterable[Candle]) -> int:
+        """Idempotently write candles. Returns the number of rows sent.
+
+        Re-ingesting the same window is a normal occurrence (polling overlap,
+        backfill retries), so writes must be idempotent. A stored bar is overwritten
+        only when the incoming one is at least as authoritative: a final candle
+        replaces a provisional one, but a provisional candle never overwrites a final
+        one — that would reintroduce an unfinished bar the analytics already consumed.
+        """
+        rows: list[dict[str, Any]] = []
+        for candle in candles:
+            instrument_id = await self.reference.ensure_instrument(
+                candle.asset, candle.source, _default_symbol(candle), candle.market_type, candle.quote
+            )
+            rows.append(
+                {
+                    "instrument_id": instrument_id,
+                    "timeframe": str(candle.timeframe),
+                    "open_time": candle.open_time,
+                    "open": candle.open,
+                    "high": candle.high,
+                    "low": candle.low,
+                    "close": candle.close,
+                    "volume": candle.volume,
+                    "quote_volume": candle.quote_volume,
+                    "trades": candle.trades,
+                    "is_final": candle.is_final,
+                    "revision": 0,
+                    "ingested_at": candle.ingested_at,
+                }
+            )
+        if not rows:
+            return 0
+
+        stmt = _upsert(self.session, OHLCV).values(rows)
+        stmt = stmt.on_conflict_do_update(
+            index_elements=[OHLCV.instrument_id, OHLCV.timeframe, OHLCV.open_time],
+            set_={
+                "open": stmt.excluded.open,
+                "high": stmt.excluded.high,
+                "low": stmt.excluded.low,
+                "close": stmt.excluded.close,
+                "volume": stmt.excluded.volume,
+                "quote_volume": stmt.excluded.quote_volume,
+                "trades": stmt.excluded.trades,
+                "is_final": stmt.excluded.is_final,
+                "revision": OHLCV.revision + 1,
+                "ingested_at": stmt.excluded.ingested_at,
+            },
+            where=(OHLCV.is_final.is_(False)) | (stmt.excluded.is_final.is_(True)),
+        )
+        await self.session.execute(stmt)
+        return len(rows)
+
+    async def fetch(
+        self,
+        asset: str,
+        timeframe: Timeframe,
+        source: str | None = None,
+        start: datetime | None = None,
+        end: datetime | None = None,
+        limit: int | None = None,
+        final_only: bool = True,
+        market_type: MarketType = MarketType.SPOT,
+    ) -> list[OHLCV]:
+        """Read candles ascending by time.
+
+        ``final_only`` defaults to True: the forming bar is display-only, and making
+        callers opt in to it is the cheap structural guard against look-ahead.
+        """
+        stmt = (
+            select(OHLCV)
+            .join(Instrument, Instrument.id == OHLCV.instrument_id)
+            .join(Asset, Asset.id == Instrument.asset_id)
+            .where(
+                Asset.symbol == asset.upper(),
+                OHLCV.timeframe == str(timeframe),
+                Instrument.market_type == str(market_type),
+            )
+            .order_by(OHLCV.open_time)
+        )
+        if source:
+            stmt = stmt.join(DataSource, DataSource.id == Instrument.source_id).where(
+                DataSource.name == source
+            )
+        if start:
+            stmt = stmt.where(OHLCV.open_time >= ensure_utc(start))
+        if end:
+            stmt = stmt.where(OHLCV.open_time < ensure_utc(end))
+        if final_only:
+            stmt = stmt.where(OHLCV.is_final.is_(True))
+        if limit:
+            stmt = stmt.limit(limit)
+        return list((await self.session.scalars(stmt)).all())
+
+    async def latest_open_time(
+        self,
+        asset: str,
+        timeframe: Timeframe,
+        source: str | None = None,
+        final_only: bool = True,
+    ) -> datetime | None:
+        """Newest stored candle — the resume point for incremental backfill."""
+        stmt = (
+            select(func.max(OHLCV.open_time))
+            .select_from(OHLCV)
+            .join(Instrument, Instrument.id == OHLCV.instrument_id)
+            .join(Asset, Asset.id == Instrument.asset_id)
+            .where(Asset.symbol == asset.upper(), OHLCV.timeframe == str(timeframe))
+        )
+        if source:
+            stmt = stmt.join(DataSource, DataSource.id == Instrument.source_id).where(
+                DataSource.name == source
+            )
+        if final_only:
+            stmt = stmt.where(OHLCV.is_final.is_(True))
+        result = await self.session.scalar(stmt)
+        return ensure_utc(result) if result is not None else None
+
+    async def earliest_open_time(
+        self, asset: str, timeframe: Timeframe, source: str | None = None
+    ) -> datetime | None:
+        stmt = (
+            select(func.min(OHLCV.open_time))
+            .select_from(OHLCV)
+            .join(Instrument, Instrument.id == OHLCV.instrument_id)
+            .join(Asset, Asset.id == Instrument.asset_id)
+            .where(Asset.symbol == asset.upper(), OHLCV.timeframe == str(timeframe))
+        )
+        if source:
+            stmt = stmt.join(DataSource, DataSource.id == Instrument.source_id).where(
+                DataSource.name == source
+            )
+        result = await self.session.scalar(stmt)
+        return ensure_utc(result) if result is not None else None
+
+    async def count(
+        self, asset: str, timeframe: Timeframe, source: str | None = None
+    ) -> int:
+        stmt = (
+            select(func.count())
+            .select_from(OHLCV)
+            .join(Instrument, Instrument.id == OHLCV.instrument_id)
+            .join(Asset, Asset.id == Instrument.asset_id)
+            .where(Asset.symbol == asset.upper(), OHLCV.timeframe == str(timeframe))
+        )
+        if source:
+            stmt = stmt.join(DataSource, DataSource.id == Instrument.source_id).where(
+                DataSource.name == source
+            )
+        return int(await self.session.scalar(stmt) or 0)
+
+    async def count_ingested_since(
+        self, asset: str, timeframe: Timeframe, since: datetime, source: str | None = None
+    ) -> int:
+        """How many candles were *written* since ``since``.
+
+        This is the exposure denominator for quality scoring: it measures how much
+        data was actually assessed in the window, which is what makes an event count
+        interpretable. Keyed on ``ingested_at``, not ``open_time`` — a backfill of a
+        year of history is one recent assessment of 8,760 bars, not a year-old event.
+        """
+        stmt = (
+            select(func.count())
+            .select_from(OHLCV)
+            .join(Instrument, Instrument.id == OHLCV.instrument_id)
+            .join(Asset, Asset.id == Instrument.asset_id)
+            .where(
+                Asset.symbol == asset.upper(),
+                OHLCV.timeframe == str(timeframe),
+                OHLCV.ingested_at >= ensure_utc(since),
+            )
+        )
+        if source:
+            stmt = stmt.join(DataSource, DataSource.id == Instrument.source_id).where(
+                DataSource.name == source
+            )
+        return int(await self.session.scalar(stmt) or 0)
+
+    async def missing_windows(
+        self,
+        asset: str,
+        timeframe: Timeframe,
+        start: datetime,
+        end: datetime,
+        source: str | None = None,
+    ) -> list[tuple[datetime, datetime]]:
+        """Contiguous gaps in stored history, as inclusive ``[from, to]`` ranges.
+
+        Compares what is stored against the expected grid rather than trusting row
+        counts, so a gap in the middle of a dense range is found as reliably as a
+        missing tail.
+        """
+        stored = {
+            row.open_time
+            for row in await self.fetch(
+                asset, timeframe, source=source, start=start, end=end, final_only=True
+            )
+        }
+        stored = {ensure_utc(ts) for ts in stored}
+        gaps: list[tuple[datetime, datetime]] = []
+        run_start: datetime | None = None
+        previous: datetime | None = None
+        for expected in grid(start, end, timeframe):
+            if expected in stored:
+                if run_start is not None and previous is not None:
+                    gaps.append((run_start, previous))
+                    run_start = None
+            else:
+                if run_start is None:
+                    run_start = expected
+                previous = expected
+        if run_start is not None and previous is not None:
+            gaps.append((run_start, previous))
+        return gaps
+
+    async def coverage(
+        self, asset: str, timeframe: Timeframe, source: str | None = None
+    ) -> dict[str, Any]:
+        """Completeness summary used by ``mie status`` and the quality report."""
+        first = await self.earliest_open_time(asset, timeframe, source)
+        last = await self.latest_open_time(asset, timeframe, source)
+        stored = await self.count(asset, timeframe, source)
+        if first is None or last is None:
+            return {"asset": asset, "timeframe": str(timeframe), "rows": 0, "completeness": None}
+        expected = int((last - first).total_seconds() // timeframe.seconds) + 1
+        return {
+            "asset": asset,
+            "timeframe": str(timeframe),
+            "rows": stored,
+            "first": first,
+            "last": last,
+            "expected": expected,
+            "completeness": round(stored / expected, 4) if expected else None,
+            "age_s": round((utcnow() - last).total_seconds()),
+        }
+
+    async def delete_range(
+        self, asset: str, timeframe: Timeframe, start: datetime, end: datetime, source: str
+    ) -> int:
+        instrument_id = await self.reference.instrument_id(asset, source)
+        if instrument_id is None:
+            return 0
+        stmt = delete(OHLCV).where(
+            OHLCV.instrument_id == instrument_id,
+            OHLCV.timeframe == str(timeframe),
+            OHLCV.open_time >= ensure_utc(start),
+            OHLCV.open_time < ensure_utc(end),
+        )
+        result = await self.session.execute(stmt)
+        # DELETE returns a CursorResult, which is where rowcount lives; the generic
+        # Result protocol does not declare it.
+        return int(cast("CursorResult[Any]", result).rowcount or 0)
+
+
+class DerivativesRepository:
+    """Funding rates and open interest."""
+
+    def __init__(self, session: AsyncSession) -> None:
+        self.session = session
+        self.reference = ReferenceRepository(session)
+
+    async def upsert_funding(self, points: Iterable[FundingRate]) -> int:
+        rows = []
+        for point in points:
+            instrument_id = await self.reference.ensure_instrument(
+                point.asset, point.source, f"{point.asset}USDT", MarketType.PERP, "USDT"
+            )
+            rows.append(
+                {
+                    "instrument_id": instrument_id,
+                    "ts": point.ts,
+                    "rate": point.rate,
+                    "interval_hours": point.interval_hours,
+                    "mark_price": point.mark_price,
+                    "ingested_at": point.ingested_at,
+                }
+            )
+        if not rows:
+            return 0
+        stmt = _upsert(self.session, FundingRateRow).values(rows)
+        stmt = stmt.on_conflict_do_update(
+            index_elements=[FundingRateRow.instrument_id, FundingRateRow.ts],
+            set_={"rate": stmt.excluded.rate, "mark_price": stmt.excluded.mark_price},
+        )
+        await self.session.execute(stmt)
+        return len(rows)
+
+    async def upsert_open_interest(self, points: Iterable[OpenInterestPoint]) -> int:
+        rows = []
+        for point in points:
+            instrument_id = await self.reference.ensure_instrument(
+                point.asset, point.source, f"{point.asset}USDT", MarketType.PERP, "USDT"
+            )
+            rows.append(
+                {
+                    "instrument_id": instrument_id,
+                    "ts": point.ts,
+                    "open_interest": point.open_interest,
+                    "open_interest_value": point.open_interest_value,
+                    "ingested_at": point.ingested_at,
+                }
+            )
+        if not rows:
+            return 0
+        stmt = _upsert(self.session, OpenInterestRow).values(rows)
+        stmt = stmt.on_conflict_do_update(
+            index_elements=[OpenInterestRow.instrument_id, OpenInterestRow.ts],
+            set_={
+                "open_interest": stmt.excluded.open_interest,
+                "open_interest_value": stmt.excluded.open_interest_value,
+            },
+        )
+        await self.session.execute(stmt)
+        return len(rows)
+
+    async def latest_funding(self, asset: str) -> FundingRateRow | None:
+        stmt = (
+            select(FundingRateRow)
+            .join(Instrument, Instrument.id == FundingRateRow.instrument_id)
+            .join(Asset, Asset.id == Instrument.asset_id)
+            .where(Asset.symbol == asset.upper())
+            .order_by(FundingRateRow.ts.desc())
+            .limit(1)
+        )
+        return await self.session.scalar(stmt)
+
+
+class GlobalMetricsRepository:
+    def __init__(self, session: AsyncSession) -> None:
+        self.session = session
+        self.reference = ReferenceRepository(session)
+
+    async def upsert(self, point: GlobalMetricsPoint) -> None:
+        source = await self.reference.ensure_source(point.source, kind="aggregator")
+        stmt = _upsert(self.session, GlobalMetricsRow).values(
+            source_id=source.id,
+            ts=point.ts,
+            btc_dominance=point.btc_dominance,
+            eth_dominance=point.eth_dominance,
+            total_market_cap_usd=point.total_market_cap_usd,
+            total_volume_24h_usd=point.total_volume_24h_usd,
+            stablecoin_share=point.stablecoin_share,
+            ingested_at=point.ingested_at,
+        )
+        stmt = stmt.on_conflict_do_update(
+            index_elements=[GlobalMetricsRow.source_id, GlobalMetricsRow.ts],
+            set_={
+                "btc_dominance": stmt.excluded.btc_dominance,
+                "eth_dominance": stmt.excluded.eth_dominance,
+                "total_market_cap_usd": stmt.excluded.total_market_cap_usd,
+                "total_volume_24h_usd": stmt.excluded.total_volume_24h_usd,
+                "stablecoin_share": stmt.excluded.stablecoin_share,
+            },
+        )
+        await self.session.execute(stmt)
+
+    async def latest(self) -> GlobalMetricsRow | None:
+        stmt = select(GlobalMetricsRow).order_by(GlobalMetricsRow.ts.desc()).limit(1)
+        return await self.session.scalar(stmt)
+
+
+class QualityRepository:
+    """Quality events and the rolling trust score derived from them."""
+
+    def __init__(self, session: AsyncSession) -> None:
+        self.session = session
+
+    async def record_events(self, events: Iterable[QualityEvent]) -> int:
+        rows = [
+            DataQualityEventRow(
+                event_type=str(e.event_type),
+                severity=str(e.severity),
+                source=e.source,
+                asset=e.asset,
+                timeframe=str(e.timeframe) if e.timeframe else None,
+                window_start=e.window_start,
+                window_end=e.window_end,
+                message=e.message[:2000],
+                details=e.details,
+                detected_at=e.detected_at,
+            )
+            for e in events
+        ]
+        if not rows:
+            return 0
+        self.session.add_all(rows)
+        await self.session.flush()
+        return len(rows)
+
+    async def recent_events(
+        self,
+        hours: int = 24,
+        source: str | None = None,
+        asset: str | None = None,
+        timeframe: Timeframe | None = None,
+        severity: str | None = None,
+        limit: int = 200,
+    ) -> list[DataQualityEventRow]:
+        """Recent events, optionally narrowed to one scope.
+
+        The ``timeframe`` filter matters more than it looks: scoring a series means
+        counting the events *for that series*. Without it, a gap on BTC 1h would drag
+        down the score of BTC 1m, which is a different feed with different behaviour.
+        """
+        since = utcnow() - timedelta(hours=hours)
+        stmt = (
+            select(DataQualityEventRow)
+            .where(DataQualityEventRow.detected_at >= since)
+            .order_by(DataQualityEventRow.detected_at.desc())
+            .limit(limit)
+        )
+        if source:
+            stmt = stmt.where(DataQualityEventRow.source == source)
+        if asset:
+            stmt = stmt.where(DataQualityEventRow.asset == asset.upper())
+        if timeframe:
+            stmt = stmt.where(DataQualityEventRow.timeframe == str(timeframe))
+        if severity:
+            stmt = stmt.where(DataQualityEventRow.severity == severity)
+        return list((await self.session.scalars(stmt)).all())
+
+    async def event_counts(self, hours: int = 24) -> dict[str, int]:
+        since = utcnow() - timedelta(hours=hours)
+        stmt = (
+            select(DataQualityEventRow.event_type, func.count())
+            .where(DataQualityEventRow.detected_at >= since)
+            .group_by(DataQualityEventRow.event_type)
+        )
+        return {row[0]: int(row[1]) for row in (await self.session.execute(stmt)).all()}
+
+    async def set_score(
+        self,
+        source: str,
+        asset: str,
+        timeframe: Timeframe,
+        score: float,
+        events_in_window: int,
+        last_candle_at: datetime | None = None,
+        details: dict[str, Any] | None = None,
+    ) -> None:
+        stmt = _upsert(self.session, SourceQualityScore).values(
+            source=source,
+            asset=asset.upper(),
+            timeframe=str(timeframe),
+            score=score,
+            events_in_window=events_in_window,
+            last_candle_at=last_candle_at,
+            details=details or {},
+            updated_at=utcnow(),
+        )
+        stmt = stmt.on_conflict_do_update(
+            index_elements=[
+                SourceQualityScore.source,
+                SourceQualityScore.asset,
+                SourceQualityScore.timeframe,
+            ],
+            set_={
+                "score": stmt.excluded.score,
+                "events_in_window": stmt.excluded.events_in_window,
+                "last_candle_at": stmt.excluded.last_candle_at,
+                "details": stmt.excluded.details,
+                "updated_at": stmt.excluded.updated_at,
+            },
+        )
+        await self.session.execute(stmt)
+
+    async def get_score(self, source: str, asset: str, timeframe: Timeframe) -> float:
+        """Trust score for a scope. Unknown scopes are optimistic (1.0) by default —
+        absence of evidence of a problem, not evidence of a problem."""
+        stmt = select(SourceQualityScore.score).where(
+            SourceQualityScore.source == source,
+            SourceQualityScore.asset == asset.upper(),
+            SourceQualityScore.timeframe == str(timeframe),
+        )
+        score = await self.session.scalar(stmt)
+        return float(score) if score is not None else 1.0
+
+    async def all_scores(self) -> list[SourceQualityScore]:
+        stmt = select(SourceQualityScore).order_by(SourceQualityScore.score)
+        return list((await self.session.scalars(stmt)).all())
+
+
+class IngestRunRepository:
+    """Append-only provenance log for ingest jobs."""
+
+    def __init__(self, session: AsyncSession) -> None:
+        self.session = session
+
+    async def record(self, result: IngestResult) -> int:
+        row = IngestRunRow(
+            job=result.job,
+            asset=result.asset,
+            timeframe=str(result.timeframe) if result.timeframe else None,
+            source=result.source,
+            status=str(result.status),
+            requested_start=result.requested_start,
+            requested_end=result.requested_end,
+            covered_start=result.covered_start,
+            covered_end=result.covered_end,
+            rows_fetched=result.rows_fetched,
+            rows_written=result.rows_written,
+            rows_rejected=result.rows_rejected,
+            quality_event_count=len(result.quality_events),
+            error=result.error[:2000] if result.error else None,
+            started_at=result.started_at,
+            finished_at=result.finished_at or utcnow(),
+            duration_s=result.duration_s,
+        )
+        self.session.add(row)
+        await self.session.flush()
+        return row.id
+
+    async def recent(self, limit: int = 50, job: str | None = None) -> list[IngestRunRow]:
+        stmt = select(IngestRunRow).order_by(IngestRunRow.started_at.desc()).limit(limit)
+        if job:
+            stmt = stmt.where(IngestRunRow.job == job)
+        return list((await self.session.scalars(stmt)).all())
+
+
+def _default_symbol(candle: Candle) -> str:
+    """Fallback provider symbol when a candle arrives without instrument context.
+
+    Real ingestion paths register the instrument explicitly with the provider's own
+    symbol; this only covers direct writes (tests, imports) so they cannot create an
+    instrument row with an empty symbol.
+    """
+    return f"{candle.asset}{candle.quote}"

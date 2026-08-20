@@ -1,0 +1,94 @@
+# Default configuration — checked in, never contains secrets.
+# Override anything here with MIE_-prefixed env vars, e.g.
+#   MIE_DATABASE__URL=postgresql+asyncpg://mie:pw@localhost:5432/mie
+#   MIE_APP__LOG_LEVEL=DEBUG
+
+app:
+  environment: dev
+  log_level: INFO
+  log_json: false
+  data_dir: ./data
+
+database:
+  # SQLite runs with zero infrastructure. Point this at TimescaleDB for production.
+  url: sqlite+aiosqlite:///./data/mie.db
+  echo: false
+  pool_size: 10
+  max_overflow: 20
+  apply_timescale: true
+
+ingestion:
+  timeframes: ["1m", "5m", "15m", "30m", "1h", "4h", "12h", "1d", "1w"]
+  live_timeframes: ["1m", "5m", "15m", "1h"]
+  backfill_days:
+    "1m": 7
+    "5m": 30
+    "15m": 90
+    "30m": 180
+    "1h": 365
+    "4h": 730
+    "12h": 1095
+    "1d": 1825
+    "1w": 2555
+  poll_interval_s: 20
+  max_concurrency: 6
+  batch_limit: 1000
+  lookback_candles_on_poll: 3
+  collect_derivatives: true
+  collect_global_metrics: true
+  derivatives_interval_s: 300
+  global_metrics_interval_s: 600
+
+quality:
+  outlier_mad_threshold: 25.0
+  outlier_min_samples: 30
+  staleness_multiplier: 3.0
+  flatline_run_length: 8
+  gap_warning_ratio: 0.01
+  gap_error_ratio: 0.10
+  source_discrepancy_pct: 0.5
+  score_window_hours: 24
+  min_score: 0.1
+  max_move_pct:
+    "1m": 12.0
+    "5m": 20.0
+    "15m": 25.0
+    "30m": 30.0
+    "1h": 35.0
+    "4h": 50.0
+    "12h": 60.0
+    "1d": 75.0
+    "1w": 150.0
+
+# Ordered by priority (lower number = preferred). Failover walks this list.
+providers:
+  - name: binance
+    enabled: true
+    priority: 10
+    timeout_s: 15
+    max_retries: 3
+    rate_limit: { rate: 10, burst: 20 }
+    options:
+      # Set to true if api.binance.com is geo-restricted for you; uses api.binance.us.
+      use_us_endpoint: false
+
+  - name: coinbase
+    enabled: true
+    priority: 20
+    timeout_s: 15
+    max_retries: 3
+    rate_limit: { rate: 8, burst: 12 }
+
+  - name: kraken
+    enabled: true
+    priority: 30
+    timeout_s: 15
+    max_retries: 3
+    rate_limit: { rate: 1, burst: 3 }
+
+  - name: coingecko
+    enabled: true
+    priority: 90
+    timeout_s: 20
+    max_retries: 2
+    rate_limit: { rate: 0.4, burst: 2 }
