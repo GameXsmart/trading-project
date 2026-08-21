@@ -7,14 +7,14 @@ produces **probabilistic, uncertainty-bearing** assessments of market state.
 > keys, and never will. It produces scenarios and probabilities for a human to
 > interpret — never guarantees, and never investment advice.
 
-**Status: Phase 1 (market data ingestion + database) is complete and tested.**
-The full architecture is designed in [`ARCHITECTURE.md`](ARCHITECTURE.md); the
-remaining phases are specified in [`docs/PHASES.md`](docs/PHASES.md) and not yet
+**Status: Phases 1 (ingestion + database) and 2 (feature engine) are complete and
+tested.** The full architecture is designed in [`ARCHITECTURE.md`](ARCHITECTURE.md);
+the remaining phases are specified in [`docs/PHASES.md`](docs/PHASES.md) and not yet
 built. Nothing in this repo pretends to be further along than it is.
 
 ---
 
-## What Phase 1 delivers
+## What Phase 1 delivers — ingestion
 
 A production-shaped ingestion layer that keeps a multi-asset, multi-timeframe market
 history correct and current, and — critically — **knows when it cannot be trusted**.
@@ -32,6 +32,22 @@ history correct and current, and — critically — **knows when it cannot be tr
 
 Verified against live exchange APIs: **150,000+ candles ingested across 30 series at
 100% grid completeness, with zero quality events.**
+
+## What Phase 2 delivers — features
+
+Sixteen incremental indicators plus market structure, computed one bar at a time and
+stored per bar.
+
+| Capability | Detail |
+|---|---|
+| **Indicators** | SMA/EMA/Wilder, RSI, MACD, ATR, Bollinger, ADX, Stochastic, OBV, anchored VWAP, realised volatility, ROC. |
+| **Market structure** | Confirmed swings, clustered support/resistance with touch counts, volume profile (POC + value area), direction-aware Fibonacci levels. |
+| **Incremental** | A new bar costs O(window), independent of how much history exists — not a recompute over months of data per candle. |
+| **Exactly reproducible** | Resuming from primed state is bit-identical to running continuously, so a restart is not a discontinuity in the feature history. |
+| **Look-ahead proof** | Two series that share 250 bars and then diverge violently produce identical vectors for every shared bar. |
+
+Verified on live data: **43,104 feature vectors** computed across BTC/ETH/SOL, with
+stored values re-derived from raw candles and matching exactly.
 
 ---
 
@@ -93,16 +109,19 @@ metrics, and quality scoring — until you stop it with Ctrl-C.
 | `mie status` | Coverage, completeness, and freshness per series. |
 | `mie quality --hours 24` | Recent quality events and trust scores. |
 | `mie audit BTC 1h` | Compare providers against each other for the same window. |
+| `mie features compute BTC 1h` | Compute and store features over stored history. |
+| `mie features compute-all` | Compute features for the whole universe. |
+| `mie features show BTC 1h` | Show the latest stored feature vector. |
 
 ---
 
 ## How it is put together
 
 ```
-providers/  →  quality/  →  storage/  →  core/events  →  (Phase 2+)
- failover      validate     Timescale     candle.closed    features
- throttle      score        SQLite                         models
- breakers                                                  predictions
+providers/  →  quality/  →  storage/  →  core/events  →  features/  →  (Phase 3+)
+ failover      validate     Timescale     candle.closed    indicators    state
+ throttle      score        SQLite                         structure     models
+ breakers                                                                predictions
 ```
 
 Four ideas carry most of the weight:
@@ -169,9 +188,10 @@ gracefully on a plain PostgreSQL without the extension.
 pytest
 ```
 
-164 tests, no network and no infrastructure required — ingestion, validation and
+242 tests, no network and no infrastructure required — ingestion, validation and
 failover run against a deterministic synthetic provider with injectable faults
-(gaps, duplicates, malformed bars, price spikes, outages).
+(gaps, duplicates, malformed bars, price spikes, outages), and every indicator is
+checked against an independently written reference implementation.
 
 A separate suite verifies the live provider contracts and is excluded by default,
 because a test that needs an exchange to be up is a test that will eventually fail
@@ -185,10 +205,9 @@ pytest -m network
 
 ## What is deliberately not here
 
-Phases 2–12 — features, regime detection, pattern and sequence discovery, news
-intelligence, the model ensemble, backtesting, the learning loop, the dashboard, and
-alerts — are **designed** in [`ARCHITECTURE.md`](ARCHITECTURE.md) and **not
-implemented**. Their directories do not exist rather than containing stubs: an empty
+Phases 3–12 — regime detection, pattern and sequence discovery, news intelligence,
+the model ensemble, backtesting, the learning loop, the dashboard, and alerts — are
+**designed** in [`ARCHITECTURE.md`](ARCHITECTURE.md) and **not implemented**. Their directories do not exist rather than containing stubs: an empty
 module pretending to be a model is worse than no module.
 
 The prediction contract, the multi-timeframe agreement model, and the learning loop

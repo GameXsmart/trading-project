@@ -31,6 +31,7 @@ from mie.storage.models import (
     Asset,
     DataQualityEventRow,
     DataSource,
+    FeatureRow,
     FundingRateRow,
     GlobalMetricsRow,
     IngestRunRow,
@@ -49,6 +50,21 @@ __all__ = [
     "QualityRepository",
     "ReferenceRepository",
 ]
+
+
+#: Every database caps the bound parameters in one statement — SQLite at 32,766 and
+#: PostgreSQL at 65,535. A multi-row INSERT spends (rows x columns) of that budget, so
+#: a large batch silently becomes "too many SQL variables" at some row count that
+#: depends on the table's width. Batching against a conservative budget makes the
+#: write size independent of both the caller's batch size and the table's shape.
+_MAX_BIND_PARAMS = 20_000
+
+
+def _chunks(rows: Sequence[dict[str, Any]], columns: int) -> Iterable[Sequence[dict[str, Any]]]:
+    """Split rows so no single statement exceeds the parameter budget."""
+    size = max(1, _MAX_BIND_PARAMS // max(1, columns))
+    for start in range(0, len(rows), size):
+        yield rows[start : start + size]
 
 
 def _upsert(session: AsyncSession, table: Any) -> Any:
@@ -217,7 +233,12 @@ class OHLCVRepository:
         if not rows:
             return 0
 
-        stmt = _upsert(self.session, OHLCV).values(rows)
+        for chunk in _chunks(rows, columns=len(rows[0])):
+            await self._upsert_ohlcv_chunk(chunk)
+        return len(rows)
+
+    async def _upsert_ohlcv_chunk(self, rows: Sequence[dict[str, Any]]) -> None:
+        stmt = _upsert(self.session, OHLCV).values(list(rows))
         stmt = stmt.on_conflict_do_update(
             index_elements=[OHLCV.instrument_id, OHLCV.timeframe, OHLCV.open_time],
             set_={
@@ -235,7 +256,6 @@ class OHLCVRepository:
             where=(OHLCV.is_final.is_(False)) | (stmt.excluded.is_final.is_(True)),
         )
         await self.session.execute(stmt)
-        return len(rows)
 
     async def fetch(
         self,
@@ -277,6 +297,43 @@ class OHLCVRepository:
         if limit:
             stmt = stmt.limit(limit)
         return list((await self.session.scalars(stmt)).all())
+
+    async def fetch_recent(
+        self,
+        asset: str,
+        timeframe: Timeframe,
+        source: str | None = None,
+        limit: int = 300,
+        final_only: bool = True,
+        market_type: MarketType = MarketType.SPOT,
+    ) -> list[OHLCV]:
+        """The newest ``limit`` bars, returned oldest-first.
+
+        ``fetch`` with a limit takes the *earliest* rows, which is the wrong end for
+        warming an indicator. This selects from the recent end and then reverses, so
+        the caller can replay the result straight into recursive state.
+        """
+        stmt = (
+            select(OHLCV)
+            .join(Instrument, Instrument.id == OHLCV.instrument_id)
+            .join(Asset, Asset.id == Instrument.asset_id)
+            .where(
+                Asset.symbol == asset.upper(),
+                OHLCV.timeframe == str(timeframe),
+                Instrument.market_type == str(market_type),
+            )
+            .order_by(OHLCV.open_time.desc())
+            .limit(limit)
+        )
+        if source:
+            stmt = stmt.join(DataSource, DataSource.id == Instrument.source_id).where(
+                DataSource.name == source
+            )
+        if final_only:
+            stmt = stmt.where(OHLCV.is_final.is_(True))
+        rows = list((await self.session.scalars(stmt)).all())
+        rows.reverse()
+        return rows
 
     async def latest_open_time(
         self,
@@ -711,3 +768,141 @@ def _default_symbol(candle: Candle) -> str:
     instrument row with an empty symbol.
     """
     return f"{candle.asset}{candle.quote}"
+
+
+class FeatureRepository:
+    """Computed feature vectors."""
+
+    def __init__(self, session: AsyncSession) -> None:
+        self.session = session
+        self.reference = ReferenceRepository(session)
+
+    async def upsert(
+        self,
+        asset: str,
+        source: str,
+        market_type: MarketType,
+        timeframe: Timeframe,
+        open_time: datetime,
+        values: dict[str, Any],
+        version: int = 1,
+    ) -> None:
+        await self.upsert_many(
+            asset=asset,
+            source=source,
+            market_type=market_type,
+            timeframe=timeframe,
+            rows=[{"open_time": open_time, "values": values}],
+            version=version,
+        )
+
+    async def upsert_many(
+        self,
+        asset: str,
+        source: str,
+        market_type: MarketType,
+        timeframe: Timeframe,
+        rows: Sequence[dict[str, Any]],
+        version: int = 1,
+    ) -> int:
+        """Idempotently write feature vectors for one series.
+
+        Recomputation is expected — a corrected bar, a new feature definition — so a
+        rewrite overwrites in place and carries the version that produced it.
+        """
+        if not rows:
+            return 0
+        instrument_id = await self.reference.ensure_instrument(
+            asset, source, f"{asset.upper()}USDT", market_type
+        )
+        now = utcnow()
+        payload = [
+            {
+                "instrument_id": instrument_id,
+                "timeframe": str(timeframe),
+                "open_time": ensure_utc(row["open_time"]),
+                "version": version,
+                "payload": row["values"],
+                "computed_at": now,
+            }
+            for row in rows
+        ]
+        for chunk in _chunks(payload, columns=len(payload[0])):
+            await self._upsert_feature_chunk(chunk)
+        return len(payload)
+
+    async def _upsert_feature_chunk(self, rows: Sequence[dict[str, Any]]) -> None:
+        stmt = _upsert(self.session, FeatureRow).values(list(rows))
+        stmt = stmt.on_conflict_do_update(
+            index_elements=[
+                FeatureRow.instrument_id,
+                FeatureRow.timeframe,
+                FeatureRow.open_time,
+            ],
+            set_={
+                "payload": stmt.excluded.payload,
+                "version": stmt.excluded.version,
+                "computed_at": stmt.excluded.computed_at,
+            },
+        )
+        await self.session.execute(stmt)
+
+    async def fetch(
+        self,
+        asset: str,
+        timeframe: Timeframe,
+        source: str | None = None,
+        start: datetime | None = None,
+        end: datetime | None = None,
+        limit: int | None = None,
+    ) -> list[FeatureRow]:
+        stmt = (
+            select(FeatureRow)
+            .join(Instrument, Instrument.id == FeatureRow.instrument_id)
+            .join(Asset, Asset.id == Instrument.asset_id)
+            .where(Asset.symbol == asset.upper(), FeatureRow.timeframe == str(timeframe))
+            .order_by(FeatureRow.open_time)
+        )
+        if source:
+            stmt = stmt.join(DataSource, DataSource.id == Instrument.source_id).where(
+                DataSource.name == source
+            )
+        if start:
+            stmt = stmt.where(FeatureRow.open_time >= ensure_utc(start))
+        if end:
+            stmt = stmt.where(FeatureRow.open_time < ensure_utc(end))
+        if limit:
+            stmt = stmt.limit(limit)
+        return list((await self.session.scalars(stmt)).all())
+
+    async def latest(
+        self, asset: str, timeframe: Timeframe, source: str | None = None
+    ) -> FeatureRow | None:
+        """Most recent feature vector — what a live consumer asks for."""
+        stmt = (
+            select(FeatureRow)
+            .join(Instrument, Instrument.id == FeatureRow.instrument_id)
+            .join(Asset, Asset.id == Instrument.asset_id)
+            .where(Asset.symbol == asset.upper(), FeatureRow.timeframe == str(timeframe))
+            .order_by(FeatureRow.open_time.desc())
+            .limit(1)
+        )
+        if source:
+            stmt = stmt.join(DataSource, DataSource.id == Instrument.source_id).where(
+                DataSource.name == source
+            )
+        return await self.session.scalar(stmt)
+
+    async def count(self, asset: str, timeframe: Timeframe, source: str | None = None) -> int:
+        stmt = (
+            select(func.count())
+            .select_from(FeatureRow)
+            .join(Instrument, Instrument.id == FeatureRow.instrument_id)
+            .join(Asset, Asset.id == Instrument.asset_id)
+            .where(Asset.symbol == asset.upper(), FeatureRow.timeframe == str(timeframe))
+        )
+        if source:
+            stmt = stmt.join(DataSource, DataSource.id == Instrument.source_id).where(
+                DataSource.name == source
+            )
+        return int(await self.session.scalar(stmt) or 0)

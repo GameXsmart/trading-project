@@ -318,3 +318,41 @@ class IngestRunRow(Base):
     started_at: Mapped[datetime] = _ts_column(default=utcnow, index=True)
     finished_at: Mapped[datetime | None] = _ts_column(nullable=True)
     duration_s: Mapped[float | None] = mapped_column(Float, nullable=True)
+
+
+class FeatureRow(Base):
+    """Computed feature vector for one bar. **Hypertable** on ``open_time``.
+
+    Keyed by instrument rather than by asset, for the same reason ``ohlcv`` is: an
+    EMA fed alternately from two venues during a failover is not an EMA of anything.
+    Two venues are two series.
+
+    Values are stored as a JSON object rather than as columns. Feature definitions
+    will change often through Phases 3-7, and a schema migration per indicator would
+    make that change expensive enough to discourage it; ``version`` records which
+    definition produced the row, so incompatible vintages are never silently mixed
+    into one training set.
+    """
+
+    __tablename__ = "features"
+    __table_args__ = (
+        Index("ix_features_lookup", "instrument_id", "timeframe", "open_time"),
+        Index("ix_features_time", "open_time"),
+    )
+
+    instrument_id: Mapped[int] = mapped_column(
+        ForeignKey("instruments.id", ondelete="CASCADE"), primary_key=True
+    )
+    timeframe: Mapped[str] = mapped_column(String(8), primary_key=True)
+    open_time: Mapped[datetime] = _ts_column(primary_key=True)
+
+    version: Mapped[int] = mapped_column(Integer, default=1)
+    # Named `payload`, not `values`: `values` is a SQL keyword requiring quoting, and
+    # on SQLAlchemy's `excluded` column collection the attribute resolves to the
+    # collection's own `values()` method rather than to the column — an upsert built
+    # that way silently binds a method object instead of the column reference.
+    payload: Mapped[dict[str, Any]] = mapped_column(JSON, default=dict)
+    computed_at: Mapped[datetime] = _ts_column(default=utcnow)
+
+    def __repr__(self) -> str:  # pragma: no cover
+        return f"<FeatureRow {self.instrument_id} {self.timeframe} {self.open_time}>"

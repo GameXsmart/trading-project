@@ -13,6 +13,8 @@ and nothing here contains logic of its own.
     mie status                        coverage and freshness per series
     mie quality                       recent quality events and trust scores
     mie audit BTC 1h                  compare providers against each other
+    mie features compute BTC 1h       compute features over stored history
+    mie features show BTC 1h          show the latest feature vector
 """
 
 from __future__ import annotations
@@ -32,6 +34,7 @@ from mie.core.timeframes import Timeframe, utcnow
 from mie.core.types import IngestStatus
 from mie.ingestion.service import IngestionService
 from mie.storage.repositories import (
+    FeatureRepository,
     IngestRunRepository,
     OHLCVRepository,
     QualityRepository,
@@ -45,6 +48,8 @@ app = typer.Typer(
 )
 db_app = typer.Typer(help="Database schema management.")
 app.add_typer(db_app, name="db")
+features_app = typer.Typer(help="Technical feature computation (Phase 2).")
+app.add_typer(features_app, name="features")
 
 console = Console()
 log = get_logger(__name__)
@@ -535,6 +540,101 @@ async def _run_until_interrupted(coro, service: IngestionService) -> None:
     except KeyboardInterrupt:
         await service.stop()
         task.cancel()
+
+
+@features_app.command("compute")
+def features_compute(
+    asset: str = typer.Argument(..., help="Canonical symbol, e.g. BTC."),
+    timeframe: str = typer.Argument(..., help="One of 1m 5m 15m 30m 1h 4h 12h 1d 1w."),
+    source: str = typer.Option("binance", "--source", help="Which venue's series."),
+    verbose: bool = typer.Option(False, "--verbose", "-v"),
+) -> None:
+    """Compute and store feature vectors across stored history for one series."""
+
+    async def _run() -> None:
+        settings = _settings(verbose)
+        frame = _tf(timeframe)
+        async with IngestionService(settings) as service:
+            written = await service.features.backfill(asset, frame, source)
+            if not written:
+                console.print(
+                    f"[yellow]no features written[/yellow] — is there stored "
+                    f"{asset.upper()} {frame} history from {source}?"
+                )
+                return
+            console.print(
+                f"[green]{written}[/green] feature vectors written for "
+                f"{asset.upper()} {frame} ({source})"
+            )
+
+    asyncio.run(_run())
+
+
+@features_app.command("compute-all")
+def features_compute_all(
+    timeframes: str | None = typer.Option(None, "--timeframes", help="Comma-separated."),
+    source: str = typer.Option("binance", "--source"),
+    verbose: bool = typer.Option(False, "--verbose", "-v"),
+) -> None:
+    """Compute features for the whole configured universe."""
+
+    async def _run() -> None:
+        settings = _settings(verbose)
+        frames = (
+            [_tf(t.strip()) for t in timeframes.split(",")]
+            if timeframes
+            else settings.ingestion.live_timeframes
+        )
+        async with IngestionService(settings) as service:
+            table = Table(title="Feature computation", header_style="bold")
+            for column in ("asset", "tf", "vectors"):
+                table.add_column(column, justify="right" if column == "vectors" else "left")
+            total = 0
+            for asset in settings.universe.enabled():
+                for frame in frames:
+                    written = await service.features.backfill(asset.symbol, frame, source)
+                    total += written
+                    table.add_row(asset.symbol, str(frame), str(written))
+            console.print(table)
+            console.print(f"[bold]{total}[/bold] feature vectors written")
+
+    asyncio.run(_run())
+
+
+@features_app.command("show")
+def features_show(
+    asset: str = typer.Argument(...),
+    timeframe: str = typer.Argument(...),
+    source: str | None = typer.Option(None, "--source"),
+) -> None:
+    """Show the most recent stored feature vector for a series."""
+
+    async def _run() -> None:
+        settings = _settings()
+        frame = _tf(timeframe)
+        async with IngestionService(settings) as service:
+            async with service.db.session() as session:
+                repo = FeatureRepository(session)
+                latest = await repo.latest(asset, frame, source=source)
+                stored = await repo.count(asset, frame, source=source)
+            if latest is None:
+                console.print(f"[yellow]no features stored[/yellow] for {asset.upper()} {frame}")
+                return
+
+            console.print(
+                f"[bold]{asset.upper()} {frame}[/bold]  as of "
+                f"{latest.open_time:%Y-%m-%d %H:%M} UTC  "
+                f"(v{latest.version}, {stored} vectors stored)"
+            )
+            table = Table(header_style="bold")
+            table.add_column("feature")
+            table.add_column("value", justify="right")
+            for key in sorted(latest.payload):
+                value = latest.payload[key]
+                table.add_row(key, f"{value:,.6g}" if isinstance(value, float) else str(value))
+            console.print(table)
+
+    asyncio.run(_run())
 
 
 def main() -> None:

@@ -7,6 +7,7 @@ from mie.storage.models import (
     Base,
     DataQualityEventRow,
     DataSource,
+    FeatureRow,
     FundingRateRow,
     GlobalMetricsRow,
     IngestRunRow,
@@ -16,6 +17,7 @@ from mie.storage.models import (
 )
 from mie.storage.repositories import (
     DerivativesRepository,
+    FeatureRepository,
     GlobalMetricsRepository,
     IngestRunRepository,
     OHLCVRepository,
@@ -31,6 +33,8 @@ __all__ = [
     "DataSource",
     "Database",
     "DerivativesRepository",
+    "FeatureRepository",
+    "FeatureRow",
     "FundingRateRow",
     "GlobalMetricsRepository",
     "GlobalMetricsRow",

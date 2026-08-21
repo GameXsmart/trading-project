@@ -24,6 +24,7 @@ from mie.core.events import EventBus, InProcessEventBus
 from mie.core.logging import get_logger
 from mie.core.timeframes import Timeframe, utcnow
 from mie.core.types import IngestResult, IngestStatus
+from mie.features.engine import FeatureEngine
 from mie.ingestion.backfill import BackfillEngine
 from mie.ingestion.live import LivePoller
 from mie.providers.manager import ProviderManager, build_providers
@@ -69,6 +70,9 @@ class IngestionService:
         self.bus = bus or InProcessEventBus()
         self.backfill_engine = BackfillEngine(self.db, self.manager, settings, self.bus)
         self.poller = LivePoller(self.db, self.manager, settings, self.bus)
+        # Phase 2 attaches to the same event stream ingestion already publishes; the
+        # poller does not know it exists.
+        self.features = FeatureEngine(self.db, settings, self.bus)
         self.scorer = QualityScorer(settings.quality)
         self.stats = ServiceStats(started_at=utcnow())
         self._stop = asyncio.Event()
@@ -95,6 +99,24 @@ class IngestionService:
             assets=len(self.settings.universe.enabled()),
             providers=len(self.manager.providers),
         )
+
+    async def start_features(self, warm: bool = True) -> None:
+        """Subscribe the feature engine and prime it from stored history.
+
+        Warming first matters: a cold engine emits nothing until 200+ new bars have
+        arrived, which on a daily series is most of a year of silence.
+        """
+        self.features.subscribe()
+        if not warm:
+            return
+        primary = next(
+            (p.name for p in self.manager.providers if p.capabilities.timeframes), None
+        )
+        if primary is None:
+            return
+        for asset in self.settings.universe.enabled():
+            for timeframe in self.settings.ingestion.live_timeframes:
+                await self.features.warmup(asset.symbol, timeframe, primary)
 
     # ------------------------------------------------------------------- backfill
 
@@ -156,6 +178,7 @@ class IngestionService:
     async def run(self) -> None:
         """Run every loop until stopped."""
         self._stop.clear()
+        await self.start_features()
         loops = [
             self._supervise("live", self.poller.run(self._stop)),
             self._supervise("derivatives", self._derivatives_loop()),

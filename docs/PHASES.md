@@ -35,25 +35,37 @@ phase begins.
 
 ---
 
-## Phase 2 — Technical feature engine
+## Phase 2 — Technical feature engine ✅ COMPLETE
 
-**Build**: incremental indicator computation (RSI, MACD, EMA/SMA, VWAP, ATR,
-Bollinger, ADX, Stochastic, OBV, volume profile, support/resistance, Fibonacci
-levels), subscribing to `candle.closed`.
+**Delivered**
 
-**Design constraints, fixed now**
+- Sixteen incremental indicators (SMA/EMA/Wilder, RSI, MACD, ATR, Bollinger, ADX,
+  Stochastic, OBV, anchored VWAP, realised volatility, ROC), each a state machine fed
+  one closed bar at a time.
+- Market structure: confirmed swing detection, level clustering, volume profile with
+  POC and value area, and direction-aware Fibonacci retracements.
+- `FeatureEngine` subscribing to `candle.closed`, with warm-up from stored history and
+  per-bar persistence to a versioned `features` table.
+- CLI: `mie features compute`, `compute-all`, `show`.
 
-- **Incremental, not recomputed.** A new bar updates state in O(1); a full historical
-  recompute on every candle is the difference between one asset and fifty.
-- **Feature values are stored with the `as_of` bar**, so any later query can
-  reconstruct exactly what was knowable at that moment.
-- **Only `is_final` bars are consumed.** Enforced by the repository default.
+**Gate: met.**
+- Every indicator matches an **independent, naively-written** reference implementation
+  to 1e-9 across a 300-bar fixture (45 tests).
+- Resuming from primed state is **bit-identical** to running continuously, verified
+  over a 2,000-bar series — which is what makes warm-up on restart safe.
+- Look-ahead is disproved directly: two series sharing 250 bars and diverging
+  violently afterwards produce **identical feature vectors** for every shared bar.
+- Verified on live data: 43,104 vectors computed across BTC/ETH/SOL, and stored
+  SMA/Bollinger/MACD values re-derived from raw candles match exactly.
 
-**Gate**
-- Indicator values match an independent reference implementation to 1e-9 on a fixed
-  historical fixture.
-- Incremental output is bit-identical to a from-scratch recompute over the same data.
-- A leakage test proves no feature at time *t* depends on any bar closing after *t*.
+**Design decisions worth carrying forward**
+
+- Windowed indicators recompute from a bounded deque rather than keeping a running
+  sum; running sums drift from fresh summation and would break exact reproducibility.
+- Features are keyed by *instrument*, not asset: feeding two venues' bars into one EMA
+  during a failover would silently corrupt it.
+- Provisional and out-of-order bars are **refused**, not tolerated — recursive
+  indicator state cannot be rewound.
 
 ---
 

@@ -21,6 +21,7 @@ from mie.core.types import (
 from mie.storage.db import Database
 from mie.storage.repositories import (
     DerivativesRepository,
+    FeatureRepository,
     GlobalMetricsRepository,
     IngestRunRepository,
     OHLCVRepository,
@@ -353,3 +354,41 @@ class TestQualityScopeIsolation:
         assert [e.message for e in hourly] == ["hourly gap"]
         assert [e.message for e in minutely] == ["minute outlier"]
         assert len(both) == 2, "omitting the filter still returns every scope"
+
+
+class TestLargeBatches:
+    """A write must not fail because of how many rows the caller happened to pass.
+
+    Both SQLite and PostgreSQL cap bound parameters per statement, and a multi-row
+    INSERT spends (rows x columns) of that budget — so without batching, the failure
+    threshold depends on the table's width and appears only at scale.
+    """
+
+    async def test_candle_batch_larger_than_the_parameter_budget(
+        self, database: Database
+    ) -> None:
+        candles = series(6000, start=FIXED_NOW - timedelta(hours=6000))
+        async with database.session() as session:
+            written = await OHLCVRepository(session).upsert_candles(candles)
+        assert written == 6000
+        async with database.session() as session:
+            assert await OHLCVRepository(session).count("BTC", Timeframe.H1) == 6000
+
+    async def test_feature_batch_larger_than_the_parameter_budget(
+        self, database: Database
+    ) -> None:
+        rows = [
+            {"open_time": FIXED_NOW + timedelta(hours=i), "values": {"rsi_14": float(i % 100)}}
+            for i in range(9000)
+        ]
+        async with database.session() as session:
+            written = await FeatureRepository(session).upsert_many(
+                asset="BTC",
+                source="fake",
+                market_type=MarketType.SPOT,
+                timeframe=Timeframe.H1,
+                rows=rows,
+            )
+        assert written == 9000
+        async with database.session() as session:
+            assert await FeatureRepository(session).count("BTC", Timeframe.H1) == 9000
