@@ -393,3 +393,53 @@ class MarketStateRow(Base):
 
     def __repr__(self) -> str:  # pragma: no cover
         return f"<MarketStateRow {self.asset} {self.as_of} {self.bias}/{self.regime}>"
+
+
+class PatternStatsRow(Base):
+    """Measured historical behaviour of one pattern on one asset, timeframe and horizon.
+
+    This table is the evidence base for the Phase 4 gate. A pattern with no row here
+    has not been measured, and an unmeasured pattern contributes nothing to any
+    prediction — absence of evidence is treated as absence of permission.
+
+    Keyed per (pattern, asset, timeframe, horizon) rather than globally because
+    measurement showed a pattern can clear the bar on one asset and fail on another;
+    a single global verdict would be wrong in both directions at once.
+    """
+
+    __tablename__ = "pattern_stats"
+    __table_args__ = (
+        Index("ix_pattern_stats_lookup", "kind", "asset", "timeframe", "horizon_bars"),
+        Index("ix_pattern_stats_informative", "informative", "edge"),
+    )
+
+    kind: Mapped[str] = mapped_column(String(40), primary_key=True)
+    asset: Mapped[str] = mapped_column(String(32), primary_key=True)
+    timeframe: Mapped[str] = mapped_column(String(8), primary_key=True)
+    horizon_bars: Mapped[int] = mapped_column(Integer, primary_key=True)
+
+    direction: Mapped[str] = mapped_column(String(16))
+    occurrences: Mapped[int] = mapped_column(Integer, default=0)
+    rate: Mapped[float] = mapped_column(Float, default=0.0)
+    interval_low: Mapped[float] = mapped_column(Float, default=0.0)
+    interval_high: Mapped[float] = mapped_column(Float, default=1.0)
+    baseline: Mapped[float] = mapped_column(Float, default=0.5)
+    edge: Mapped[float] = mapped_column(Float, default=0.0)
+    p_value: Mapped[float] = mapped_column(Float, default=1.0)
+    #: True only after multiple-comparison correction across the whole sweep.
+    significant: Mapped[bool] = mapped_column(Boolean, default=False)
+    # No `index=True` here: SQLAlchemy would auto-name that index
+    # `ix_pattern_stats_informative`, colliding with the composite index declared
+    # in __table_args__, which already covers this column as its leading key.
+    informative: Mapped[bool] = mapped_column(Boolean, default=False)
+    verdict: Mapped[str] = mapped_column(String(40), default="")
+    mean_return_pct: Mapped[float] = mapped_column(Float, default=0.0)
+    median_return_pct: Mapped[float] = mapped_column(Float, default=0.0)
+    mean_favourable_pct: Mapped[float] = mapped_column(Float, default=0.0)
+    mean_adverse_pct: Mapped[float] = mapped_column(Float, default=0.0)
+    sample_start: Mapped[datetime | None] = _ts_column(nullable=True)
+    sample_end: Mapped[datetime | None] = _ts_column(nullable=True)
+    computed_at: Mapped[datetime] = _ts_column(default=utcnow)
+
+    def __repr__(self) -> str:  # pragma: no cover
+        return f"<PatternStatsRow {self.kind} {self.asset} {self.timeframe} +{self.horizon_bars}>"

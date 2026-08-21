@@ -13,6 +13,7 @@ from mie.storage.models import (
     IngestRunRow,
     Instrument,
     OpenInterestRow,
+    PatternStatsRow,
     SourceQualityScore,
 )
 from mie.storage.repositories import (
@@ -21,6 +22,7 @@ from mie.storage.repositories import (
     GlobalMetricsRepository,
     IngestRunRepository,
     OHLCVRepository,
+    PatternStatsRepository,
     QualityRepository,
     ReferenceRepository,
 )
@@ -43,6 +45,8 @@ __all__ = [
     "Instrument",
     "OHLCVRepository",
     "OpenInterestRow",
+    "PatternStatsRepository",
+    "PatternStatsRow",
     "QualityRepository",
     "ReferenceRepository",
     "SourceQualityScore",

@@ -38,6 +38,7 @@ from mie.storage.models import (
     Instrument,
     MarketStateRow,
     OpenInterestRow,
+    PatternStatsRow,
     SourceQualityScore,
 )
 
@@ -1002,3 +1003,81 @@ class MarketStateRepository:
             .group_by(MarketStateRow.regime)
         )
         return {row[0]: int(row[1]) for row in (await self.session.execute(stmt)).all()}
+
+
+class PatternStatsRepository:
+    """The evidence base behind the Phase 4 pattern gate."""
+
+    def __init__(self, session: AsyncSession) -> None:
+        self.session = session
+
+    async def upsert_many(self, stats: Sequence[Any]) -> int:
+        """Store measured pattern statistics, replacing any prior measurement.
+
+        Re-measurement is expected — more history, or a corrected detector — and the
+        latest measurement always wins. Keeping stale statistics would let a finding
+        that a later fix invalidated go on influencing predictions.
+        """
+        if not stats:
+            return 0
+        now = utcnow()
+        rows = [
+            {
+                "kind": str(s.kind),
+                "asset": s.asset.upper(),
+                "timeframe": str(s.timeframe),
+                "horizon_bars": s.horizon_bars,
+                "direction": str(s.direction),
+                "occurrences": s.occurrences,
+                "rate": s.estimate.rate,
+                "interval_low": s.estimate.low,
+                "interval_high": s.estimate.high,
+                "baseline": s.estimate.baseline,
+                "edge": s.estimate.edge,
+                "p_value": s.estimate.p_value,
+                "significant": s.estimate.significant,
+                "informative": s.is_informative,
+                "verdict": s.verdict,
+                "mean_return_pct": s.mean_return_pct,
+                "median_return_pct": s.median_return_pct,
+                "mean_favourable_pct": s.mean_favourable_pct,
+                "mean_adverse_pct": s.mean_adverse_pct,
+                "sample_start": s.sample_start,
+                "sample_end": s.sample_end,
+                "computed_at": now,
+            }
+            for s in stats
+        ]
+        updatable = (
+            "direction", "occurrences", "rate", "interval_low", "interval_high",
+            "baseline", "edge", "p_value", "significant", "informative", "verdict",
+            "mean_return_pct", "median_return_pct", "mean_favourable_pct",
+            "mean_adverse_pct", "sample_start", "sample_end", "computed_at",
+        )
+        for chunk in _chunks(rows, columns=len(rows[0])):
+            stmt = _upsert(self.session, PatternStatsRow).values(list(chunk))
+            stmt = stmt.on_conflict_do_update(
+                index_elements=[
+                    PatternStatsRow.kind,
+                    PatternStatsRow.asset,
+                    PatternStatsRow.timeframe,
+                    PatternStatsRow.horizon_bars,
+                ],
+                set_={column: getattr(stmt.excluded, column) for column in updatable},
+            )
+            await self.session.execute(stmt)
+        return len(rows)
+
+    async def all_stats(self, informative_only: bool = False) -> list[PatternStatsRow]:
+        stmt = select(PatternStatsRow).order_by(PatternStatsRow.p_value)
+        if informative_only:
+            stmt = stmt.where(PatternStatsRow.informative.is_(True))
+        return list((await self.session.scalars(stmt)).all())
+
+    async def for_asset(
+        self, asset: str, timeframe: Timeframe | None = None
+    ) -> list[PatternStatsRow]:
+        stmt = select(PatternStatsRow).where(PatternStatsRow.asset == asset.upper())
+        if timeframe:
+            stmt = stmt.where(PatternStatsRow.timeframe == str(timeframe))
+        return list((await self.session.scalars(stmt.order_by(PatternStatsRow.p_value))).all())

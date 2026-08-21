@@ -108,24 +108,69 @@ phase begins.
 
 ---
 
-## Phase 4 — Pattern and sequence discovery
+## Phase 4 — Pattern discovery and validation 🟡 PARTIAL
 
-**Build**: pattern detection (breakouts, fakeouts, accumulation, distribution,
-liquidity sweeps, compression/expansion, exhaustion, divergences, structure breaks),
-historical similarity search, and statistical sequence mining.
+**Delivered**
 
-**Design constraints**
+- Eleven detectors covering nineteen pattern kinds (breakouts, fakeouts, liquidity
+  sweeps, compression/expansion, accumulation/distribution, divergences, momentum
+  exhaustion, trend continuation, structure breaks, volume anomalies).
+- Dependency-free statistics: Wilson score intervals, pooled two-proportion tests,
+  Benjamini-Hochberg false-discovery control.
+- `PatternEvaluator`: scans history, measures forward outcomes over three horizons,
+  compares each pattern against the **unconditional** rate over the same sample.
+- `PatternRegistry`: the gate. A pattern influences predictions only with stored
+  evidence for that exact asset, timeframe and horizon.
+- `pattern_stats` table and CLI: `mie patterns measure`, `mie patterns show`.
 
-- A pattern is only admitted if it has a **measured historical base rate** with a
-  confidence interval. "This looks like a breakout" is worthless; "this configuration
-  resolved upward 58% of the time (n=214, CI 51–65%)" is not.
-- Similarity search must be honest about regime: the nearest historical neighbour
-  from a different volatility regime is not a comparable situation.
+**Still to build:** historical similarity search and statistical sequence mining
+(the "what usually happens before and after this" chains of requirement §6).
 
-**Gate**
-- Every detector reports its historical base rate, sample size, and interval.
-- Detectors with base rates statistically indistinguishable from chance are removed,
-  not shipped with a caveat.
+**Gate: met for the detectors built.**
+
+Every detector reports a base rate, sample size and confidence interval, and those
+that fail are withheld rather than shipped with a caveat. Measured across BTC/ETH/SOL
+on 1h and 4h, three horizons — 342 combinations:
+
+**9 of 342 (2.6%) are informative. Every one of them is direction-neutral.**
+
+| Pattern | Assets | Edge over baseline |
+|---|---|---|
+| `volume_anomaly` | BTC, ETH, SOL (h=3 and h=12) | +8.0% to +20.8% |
+| `compression` | BTC, SOL 4h (h=3) | +22.4%, +24.8% |
+| `expansion` | ETH 1h (h=3) | +12.1% |
+
+**No directional pattern survived on any asset.** Breakouts, structure breaks,
+divergences, trend continuation, liquidity sweeps and momentum exhaustion are all
+statistically indistinguishable from the market's own drift after correction. On BTC
+1h, `breakout_up` at h=3 was *negative* (43.5% vs a 49.8% baseline).
+
+What did survive is volatility clustering — a well-established effect. Volume spikes
+and range compression genuinely predict *movement*; they say nothing about direction,
+and the system does not pretend otherwise.
+
+**Methodological decisions worth carrying forward**
+
+- The baseline is the **unconditional outcome rate over the same sample**, never 50%.
+  In a market that rose 54% of hours, a "56% accurate" pattern has a two-point edge,
+  not six.
+- Benjamini-Hochberg is applied across the **whole sweep at once**. Uncorrected, 342
+  tests at p<0.05 would produce ~17 "discoveries" from noise alone.
+- Overlapping detections are thinned to one horizon apart: consecutive hits share
+  nearly all of their forward window, so counting each as independent inflates n and
+  shrinks the interval past what the evidence supports.
+- Detector thresholds are conventional and fixed **before** measurement. Tuning them
+  against the same history would guarantee a good-looking result and nothing else.
+- Pattern direction is declared in advance. Deciding it after seeing the outcome is
+  relabelling, not analysis.
+
+**A bug this phase surfaced.** The first `fakeout` implementation required only
+`high > prior_high and close < prior_high`, which fired on **37% of all bars** — a
+"pattern" present in a third of history describes the market rather than signalling
+anything in it. It initially produced the sweep's one apparently-significant
+directional finding (ETH `fakeout_down`, p=0.0031). Requiring the breach and the
+rejection to be *material* dropped its firing rate to ~1%, and the finding vanished.
+A frequency check now guards against the same class of error.
 
 ---
 

@@ -16,6 +16,8 @@ and nothing here contains logic of its own.
     mie features compute BTC 1h       compute features over stored history
     mie features show BTC 1h          show the latest feature vector
     mie state BTC                     multi-timeframe market state
+    mie patterns measure              measure every detector against history
+    mie patterns show                 which patterns earned predictive use
 """
 
 from __future__ import annotations
@@ -33,12 +35,16 @@ from mie.config.settings import Settings, load_settings
 from mie.core.logging import configure_logging, get_logger
 from mie.core.timeframes import Timeframe, utcnow
 from mie.core.types import IngestStatus
+from mie.features.engine import _row_to_candle
 from mie.ingestion.service import IngestionService
+from mie.patterns.evaluation import PatternEvaluator
+from mie.patterns.registry import PatternRegistry
 from mie.state.engine import StateEngine
 from mie.storage.repositories import (
     FeatureRepository,
     IngestRunRepository,
     OHLCVRepository,
+    PatternStatsRepository,
     QualityRepository,
 )
 
@@ -52,6 +58,8 @@ db_app = typer.Typer(help="Database schema management.")
 app.add_typer(db_app, name="db")
 features_app = typer.Typer(help="Technical feature computation (Phase 2).")
 app.add_typer(features_app, name="features")
+patterns_app = typer.Typer(help="Pattern detection and statistical validation (Phase 4).")
+app.add_typer(patterns_app, name="patterns")
 
 console = Console()
 log = get_logger(__name__)
@@ -711,6 +719,130 @@ def _direction_markup(direction: object) -> str:
     if "down" in text:
         return f"[red]{text}[/red]"
     return f"[dim]{text}[/dim]"
+
+
+@patterns_app.command("measure")
+def patterns_measure(
+    assets: str | None = typer.Option(None, "--assets", help="Comma-separated."),
+    timeframes: str | None = typer.Option(None, "--timeframes", help="Comma-separated."),
+    source: str = typer.Option("binance", "--source"),
+    verbose: bool = typer.Option(False, "--verbose", "-v"),
+) -> None:
+    """Measure every detector against history and record which ones earn predictive use.
+
+    Each pattern is scored against the *unconditional* outcome rate over the same
+    sample, not against a coin flip, and the whole sweep is corrected for multiple
+    comparisons. Patterns that fail are withheld from the predictive path entirely.
+    """
+
+    async def _run() -> None:
+        settings = _settings(verbose)
+        symbols = (
+            [a.strip().upper() for a in assets.split(",")]
+            if assets
+            else settings.universe.symbols()
+        )
+        frames = (
+            [_tf(t.strip()) for t in timeframes.split(",")]
+            if timeframes
+            else [Timeframe.H1, Timeframe.H4]
+        )
+        evaluator = PatternEvaluator()
+        registry = PatternRegistry()
+
+        async with IngestionService(settings) as service:
+            for asset in symbols:
+                for frame in frames:
+                    async with service.db.session() as session:
+                        rows = await OHLCVRepository(session).fetch(
+                            asset, frame, source=source
+                        )
+                    if len(rows) < 500:
+                        continue
+                    candles = [_row_to_candle(r, asset, frame, source) for r in rows]
+                    result = evaluator.evaluate(candles, asset, frame)
+                    registry.extend(result.stats)
+                    console.print(
+                        f"  {asset:5} {frame!s:4} {len(candles):>6} bars, "
+                        f"{len(result.detections):>5} detections, "
+                        f"{len(result.informative)}/{len(result.stats)} informative"
+                    )
+
+            if not len(registry):
+                console.print("[yellow]no series had enough history to measure[/yellow]")
+                return
+
+            async with service.db.session() as session:
+                await PatternStatsRepository(session).upsert_many(
+                    registry.admitted() + registry.rejected()
+                )
+
+        admitted = registry.admitted()
+        console.print(
+            f"\n[bold]{len(admitted)}[/bold] of [bold]{len(registry)}[/bold] measured "
+            f"pattern/asset/timeframe/horizon combinations are informative"
+        )
+        if admitted:
+            table = Table(title="Admitted to the predictive path", header_style="bold")
+            for column in ("pattern", "asset", "tf", "h", "n", "rate", "baseline", "edge", "p"):
+                table.add_column(column)
+            for stat in admitted:
+                e = stat.estimate
+                table.add_row(
+                    str(stat.kind), stat.asset, str(stat.timeframe),
+                    str(stat.horizon_bars), str(e.trials),
+                    f"{e.rate:.1%}", f"{e.baseline:.1%}",
+                    f"[green]{e.edge:+.1%}[/green]", f"{e.p_value:.4f}",
+                )
+            console.print(table)
+        console.print(
+            f"[dim]{len(registry.rejected())} withheld: not distinguishable from the "
+            f"market's own behaviour after correcting for multiple comparisons.[/dim]"
+        )
+
+    asyncio.run(_run())
+
+
+@patterns_app.command("show")
+def patterns_show(
+    asset: str | None = typer.Option(None, "--asset"),
+    all_results: bool = typer.Option(False, "--all", help="Include withheld patterns."),
+) -> None:
+    """Show which patterns have earned the right to influence predictions."""
+
+    async def _run() -> None:
+        settings = _settings()
+        async with IngestionService(settings) as service, service.db.session() as session:
+            repo = PatternStatsRepository(session)
+            rows = (
+                await repo.for_asset(asset)
+                if asset
+                else await repo.all_stats(informative_only=not all_results)
+            )
+        if not rows:
+            console.print(
+                "[yellow]no measurements stored[/yellow] - run `mie patterns measure` first"
+            )
+            return
+
+        table = Table(title="Pattern evidence", header_style="bold")
+        for column in ("pattern", "asset", "tf", "h", "n", "rate", "base", "edge", "p", "verdict"):
+            table.add_column(column)
+        for row in rows[:40]:
+            colour = "green" if row.informative else "dim"
+            table.add_row(
+                row.kind, row.asset, row.timeframe, str(row.horizon_bars),
+                str(row.occurrences), f"{row.rate:.1%}", f"{row.baseline:.1%}",
+                f"[{colour}]{row.edge:+.1%}[/{colour}]", f"{row.p_value:.4f}",
+                f"[{colour}]{row.verdict}[/{colour}]",
+            )
+        console.print(table)
+        console.print(
+            "[dim]Only patterns marked informative may influence a prediction. "
+            "Everything else is descriptive only.[/dim]"
+        )
+
+    asyncio.run(_run())
 
 
 def main() -> None:

@@ -7,8 +7,10 @@ produces **probabilistic, uncertainty-bearing** assessments of market state.
 > keys, and never will. It produces scenarios and probabilities for a human to
 > interpret — never guarantees, and never investment advice.
 
-**Status: Phases 1 (ingestion + database), 2 (feature engine) and 3
-(multi-timeframe market state) are complete and tested.** The full architecture is designed in [`ARCHITECTURE.md`](ARCHITECTURE.md);
+**Status: Phases 1 (ingestion + database), 2 (feature engine) and 3 (multi-timeframe
+market state) are complete and tested; Phase 4 (pattern validation) is partially
+complete** — detectors and the statistical gate are built, similarity search and
+sequence mining are not. The full architecture is designed in [`ARCHITECTURE.md`](ARCHITECTURE.md);
 the remaining phases are specified in [`docs/PHASES.md`](docs/PHASES.md) and not yet
 built. Nothing in this repo pretends to be further along than it is.
 
@@ -64,6 +66,33 @@ noise**.
 
 A bullish daily with a bearish 15m reads *"pullback within a larger uptrend"* — never
 a flat neutral average, which is the one description that fits neither timeframe.
+
+## What Phase 4 delivers — measured patterns, not folklore
+
+Eleven detectors, each of which must **earn** the right to influence a prediction.
+
+Every pattern is scored against the *unconditional* outcome rate over the same
+sample — not against a coin flip — with Wilson confidence intervals and
+Benjamini-Hochberg correction across the whole sweep. Patterns that fail are withheld
+from the predictive path entirely; there is no reduced-weight or "directionally
+suggestive" mode.
+
+Measured across BTC/ETH/SOL on 1h and 4h over three horizons — **342 combinations,
+9 informative (2.6%)**:
+
+| Pattern | Where it held | Edge over baseline |
+|---|---|---|
+| `volume_anomaly` | BTC, ETH, SOL (h=3, h=12) | +8.0% to +20.8% |
+| `compression` | BTC, SOL 4h (h=3) | +22.4%, +24.8% |
+| `expansion` | ETH 1h (h=3) | +12.1% |
+
+**Every surviving pattern is direction-neutral.** Not one directional pattern —
+breakouts, structure breaks, divergences, trend continuation, liquidity sweeps,
+momentum exhaustion — beat the market's own drift on any asset. What survives is
+volatility clustering: these patterns predict *movement*, say nothing about
+direction, and the system does not pretend otherwise.
+
+That result is the point of the phase, not a disappointment in it.
 
 ---
 
@@ -129,16 +158,18 @@ metrics, and quality scoring — until you stop it with Ctrl-C.
 | `mie features compute-all` | Compute features for the whole universe. |
 | `mie features show BTC 1h` | Show the latest stored feature vector. |
 | `mie state BTC` | Hierarchical multi-timeframe market state. |
+| `mie patterns measure` | Measure every detector against history. |
+| `mie patterns show` | Which patterns earned predictive use. |
 
 ---
 
 ## How it is put together
 
 ```
-providers/ → quality/ → storage/ → core/events → features/ → state/ → (Phase 4+)
- failover    validate    Timescale   candle.closed  indicators  hierarchy  patterns
- throttle    score       SQLite                     structure   regime     models
- breakers                                                       alignment  predictions
+providers/ → quality/ → storage/ → core/events → features/ → state/ → patterns/
+ failover    validate    Timescale   candle.closed  indicators  hierarchy  detectors
+ throttle    score       SQLite                     structure   regime     statistics
+ breakers                                                       alignment  evidence gate
 ```
 
 Four ideas carry most of the weight:
@@ -161,7 +192,13 @@ When the primary provider fails, the next one serves the request *and* a
 `PROVIDER_FAILOVER` quality event is recorded. "The data arrived, but from the
 third-choice venue" is information the confidence layer needs.
 
-**4. Thresholds are measured, not guessed.**
+**4. A pattern must earn its influence.**
+Detection is descriptive and cheap; prediction is a claim about the future and needs
+evidence. The registry withholds any pattern lacking a significant measured edge for
+that exact asset, timeframe and horizon — and on real data that withheld 333 of 342
+combinations. Absence of evidence is treated as absence of permission.
+
+**5. Thresholds are measured, not guessed.**
 The outlier threshold is set at 25 robust sigma because measurement on real BTC data
 showed that z > 10 fires on 0.2–0.4% of perfectly normal bars (crypto returns are
 fat-tailed) while nothing at all exceeded z > 30. A detector that cries wolf on
@@ -205,7 +242,7 @@ gracefully on a plain PostgreSQL without the extension.
 pytest
 ```
 
-281 tests, no network and no infrastructure required — ingestion, validation and
+319 tests, no network and no infrastructure required — ingestion, validation and
 failover run against a deterministic synthetic provider with injectable faults
 (gaps, duplicates, malformed bars, price spikes, outages), and every indicator is
 checked against an independently written reference implementation.
@@ -222,9 +259,10 @@ pytest -m network
 
 ## What is deliberately not here
 
-Phases 4–12 — pattern and sequence discovery, news intelligence, the model ensemble,
-backtesting, the learning loop, the dashboard, and alerts — are **designed** in
-[`ARCHITECTURE.md`](ARCHITECTURE.md) and **not implemented**. Their directories do not exist rather than containing stubs: an empty
+Phases 5–12 — news intelligence, the model ensemble, backtesting, the learning loop,
+the dashboard, and alerts — are **designed** in [`ARCHITECTURE.md`](ARCHITECTURE.md)
+and **not implemented**. Within Phase 4, historical similarity search and sequence
+mining remain to be built. Their directories do not exist rather than containing stubs: an empty
 module pretending to be a model is worse than no module.
 
 The prediction contract, the multi-timeframe agreement model, and the learning loop
