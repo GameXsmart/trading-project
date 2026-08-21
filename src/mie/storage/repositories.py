@@ -36,6 +36,7 @@ from mie.storage.models import (
     GlobalMetricsRow,
     IngestRunRow,
     Instrument,
+    MarketStateRow,
     OpenInterestRow,
     SourceQualityScore,
 )
@@ -906,3 +907,98 @@ class FeatureRepository:
                 DataSource.name == source
             )
         return int(await self.session.scalar(stmt) or 0)
+
+
+class MarketStateRepository:
+    """Persisted multi-timeframe market state."""
+
+    def __init__(self, session: AsyncSession) -> None:
+        self.session = session
+
+    async def upsert(self, state: Any) -> None:
+        """Store one state. Recomputing the same moment overwrites in place."""
+        stmt = _upsert(self.session, MarketStateRow).values(
+            asset=state.asset,
+            as_of=ensure_utc(state.as_of),
+            bias=str(state.bias),
+            alignment=str(state.alignment),
+            regime=str(state.regime),
+            agreement=state.agreement,
+            confidence=state.confidence,
+            data_quality=state.data_quality,
+            interpretation=state.interpretation,
+            levels={
+                str(level.timeframe): {
+                    "direction": str(level.direction),
+                    "strength": level.strength,
+                    "confidence": level.confidence,
+                    "score": level.score,
+                    "as_of": level.as_of.isoformat(),
+                    "close": level.close,
+                    "volatility_pct": level.volatility_pct,
+                    "evidence": [e.model_dump() for e in level.evidence],
+                    "counter_evidence": [e.model_dump() for e in level.counter_evidence],
+                }
+                for level in state.timeframes
+            },
+            evidence={
+                "supporting": [e.model_dump() for e in state.evidence],
+                "conflicts": state.conflicts,
+                "details": state.details,
+            },
+            computed_at=utcnow(),
+        )
+        stmt = stmt.on_conflict_do_update(
+            index_elements=[MarketStateRow.asset, MarketStateRow.as_of],
+            set_={
+                "bias": stmt.excluded.bias,
+                "alignment": stmt.excluded.alignment,
+                "regime": stmt.excluded.regime,
+                "agreement": stmt.excluded.agreement,
+                "confidence": stmt.excluded.confidence,
+                "data_quality": stmt.excluded.data_quality,
+                "interpretation": stmt.excluded.interpretation,
+                "levels": stmt.excluded.levels,
+                "evidence": stmt.excluded.evidence,
+                "computed_at": stmt.excluded.computed_at,
+            },
+        )
+        await self.session.execute(stmt)
+
+    async def latest(self, asset: str) -> MarketStateRow | None:
+        stmt = (
+            select(MarketStateRow)
+            .where(MarketStateRow.asset == asset.upper())
+            .order_by(MarketStateRow.as_of.desc())
+            .limit(1)
+        )
+        return await self.session.scalar(stmt)
+
+    async def history(
+        self,
+        asset: str,
+        start: datetime | None = None,
+        end: datetime | None = None,
+        limit: int = 500,
+    ) -> list[MarketStateRow]:
+        stmt = (
+            select(MarketStateRow)
+            .where(MarketStateRow.asset == asset.upper())
+            .order_by(MarketStateRow.as_of)
+            .limit(limit)
+        )
+        if start:
+            stmt = stmt.where(MarketStateRow.as_of >= ensure_utc(start))
+        if end:
+            stmt = stmt.where(MarketStateRow.as_of < ensure_utc(end))
+        return list((await self.session.scalars(stmt)).all())
+
+    async def regime_counts(self, hours: int = 168) -> dict[str, int]:
+        """How much time each regime has accounted for recently."""
+        since = utcnow() - timedelta(hours=hours)
+        stmt = (
+            select(MarketStateRow.regime, func.count())
+            .where(MarketStateRow.as_of >= since)
+            .group_by(MarketStateRow.regime)
+        )
+        return {row[0]: int(row[1]) for row in (await self.session.execute(stmt)).all()}

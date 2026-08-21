@@ -7,8 +7,8 @@ produces **probabilistic, uncertainty-bearing** assessments of market state.
 > keys, and never will. It produces scenarios and probabilities for a human to
 > interpret — never guarantees, and never investment advice.
 
-**Status: Phases 1 (ingestion + database) and 2 (feature engine) are complete and
-tested.** The full architecture is designed in [`ARCHITECTURE.md`](ARCHITECTURE.md);
+**Status: Phases 1 (ingestion + database), 2 (feature engine) and 3
+(multi-timeframe market state) are complete and tested.** The full architecture is designed in [`ARCHITECTURE.md`](ARCHITECTURE.md);
 the remaining phases are specified in [`docs/PHASES.md`](docs/PHASES.md) and not yet
 built. Nothing in this repo pretends to be further along than it is.
 
@@ -48,6 +48,22 @@ stored per bar.
 
 Verified on live data: **43,104 feature vectors** computed across BTC/ETH/SOL, with
 stored values re-derived from raw candles and matching exactly.
+
+## What Phase 3 delivers — market state
+
+A hierarchical read across timeframes, where **conflict is information rather than
+noise**.
+
+| Capability | Detail |
+|---|---|
+| **Per-timeframe state** | Direction, strength and confidence kept as three separate quantities, with evidence and counter-evidence enumerated. |
+| **Named alignment** | `aligned_bullish`, `pullback_in_uptrend`, `rally_in_downtrend`, `possible_reversal`, `rangebound`, `conflicted`. |
+| **Regime** | Bull/bear bands plus high/low volatility, accumulation, distribution, capitulation, recovery — volatility outranks direction, because a violent market is a different environment either way. |
+| **Explanation** | A plain-English interpretation plus an explicit list of conflicts. |
+| **Historical reconstruction** | `as_of` rebuilds the state as it stood, using only bars that had closed by then. |
+
+A bullish daily with a bearish 15m reads *"pullback within a larger uptrend"* — never
+a flat neutral average, which is the one description that fits neither timeframe.
 
 ---
 
@@ -112,16 +128,17 @@ metrics, and quality scoring — until you stop it with Ctrl-C.
 | `mie features compute BTC 1h` | Compute and store features over stored history. |
 | `mie features compute-all` | Compute features for the whole universe. |
 | `mie features show BTC 1h` | Show the latest stored feature vector. |
+| `mie state BTC` | Hierarchical multi-timeframe market state. |
 
 ---
 
 ## How it is put together
 
 ```
-providers/  →  quality/  →  storage/  →  core/events  →  features/  →  (Phase 3+)
- failover      validate     Timescale     candle.closed    indicators    state
- throttle      score        SQLite                         structure     models
- breakers                                                                predictions
+providers/ → quality/ → storage/ → core/events → features/ → state/ → (Phase 4+)
+ failover    validate    Timescale   candle.closed  indicators  hierarchy  patterns
+ throttle    score       SQLite                     structure   regime     models
+ breakers                                                       alignment  predictions
 ```
 
 Four ideas carry most of the weight:
@@ -188,7 +205,7 @@ gracefully on a plain PostgreSQL without the extension.
 pytest
 ```
 
-242 tests, no network and no infrastructure required — ingestion, validation and
+281 tests, no network and no infrastructure required — ingestion, validation and
 failover run against a deterministic synthetic provider with injectable faults
 (gaps, duplicates, malformed bars, price spikes, outages), and every indicator is
 checked against an independently written reference implementation.
@@ -205,9 +222,9 @@ pytest -m network
 
 ## What is deliberately not here
 
-Phases 3–12 — regime detection, pattern and sequence discovery, news intelligence,
-the model ensemble, backtesting, the learning loop, the dashboard, and alerts — are
-**designed** in [`ARCHITECTURE.md`](ARCHITECTURE.md) and **not implemented**. Their directories do not exist rather than containing stubs: an empty
+Phases 4–12 — pattern and sequence discovery, news intelligence, the model ensemble,
+backtesting, the learning loop, the dashboard, and alerts — are **designed** in
+[`ARCHITECTURE.md`](ARCHITECTURE.md) and **not implemented**. Their directories do not exist rather than containing stubs: an empty
 module pretending to be a model is worse than no module.
 
 The prediction contract, the multi-timeframe agreement model, and the learning loop

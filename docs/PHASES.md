@@ -69,23 +69,42 @@ phase begins.
 
 ---
 
-## Phase 3 — Multi-timeframe market state
+## Phase 3 — Multi-timeframe market state ✅ COMPLETE
 
-**Build**: the hierarchical state model — per-timeframe `{direction, strength,
-confidence}` plus the agreement tensor across levels.
+**Delivered**
 
-**Design constraints**
+- `Direction` / `Regime` / `Alignment` vocabulary, keeping direction, strength and
+  confidence as three separate quantities rather than one blended score.
+- `TimeframeClassifier`: feature vector → per-timeframe state, from four weighted
+  signal groups (trend, momentum, structure, volume), with evidence and
+  counter-evidence enumerated.
+- `HierarchyAnalyzer`: per-timeframe states → one `MarketState` with named alignment,
+  regime, agreement, conflicts, and a plain-English interpretation.
+- `StateEngine` with `as_of` reconstruction, persistence of every per-timeframe level,
+  and the Phase 1 trust score multiplying into confidence.
+- CLI: `mie state BTC`.
 
-- Higher timeframes set the prior; lower ones update it. Conflict is *information*
-  ("pullback inside an uptrend"), not noise to average away.
-- Per-level states are persisted, not just the aggregate — the "Why?" panel and
-  regime-conditional evaluation both need them.
+**Gate: met.**
+- Hand-labelled scenarios classify correctly: uptrend, downtrend, chop (no confident
+  direction), capitulation, recovery.
+- A bullish daily with a bearish 15m yields `pullback_in_uptrend` with a bullish
+  bias — never a flat neutral average — and the conflict is listed explicitly.
+- Verified against real history: BTC state reconstructed at 360 points over 60 days
+  produced 40% aligned bearish, 31% aligned bullish, 13% conflicted, 8% possible
+  reversal, 2% counter-trend rally.
 
-**Gate**
-- Hand-labelled historical scenarios (clear uptrend, chop, capitulation, recovery)
-  are classified correctly.
-- A bullish daily with a bearish 15m yields "pullback within uptrend", never a flat
-  neutral average.
+**Design decisions worth carrying forward**
+
+- The structural/tactical split is **relative to the set of timeframes analysed**, not
+  anchored to a fixed one. An absolute hinge left the tactical group empty whenever
+  every requested timeframe fell on one side of it, silently disabling pullback
+  detection — a failure invisible to unit tests built from hand-made states, and
+  caught only by reconstructing real history.
+- Within the structural group the slowest timeframe leads; within the tactical group
+  the **fastest** leads, because a correction appears there first.
+- Confidence is capped below 1.0. A hand-weighted rule set that agrees with itself is
+  still only a rule set, and clean trending data reaches the ceiling routinely.
+- Group summaries state their **net** lean rather than implying unanimity.
 
 ---
 

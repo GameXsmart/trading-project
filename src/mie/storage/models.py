@@ -356,3 +356,40 @@ class FeatureRow(Base):
 
     def __repr__(self) -> str:  # pragma: no cover
         return f"<FeatureRow {self.instrument_id} {self.timeframe} {self.open_time}>"
+
+
+class MarketStateRow(Base):
+    """Multi-timeframe market state for one asset at one moment.
+
+    Keyed by asset rather than by instrument: a market state is a statement about the
+    *asset*, synthesised from whichever venue supplied the features, and duplicating
+    it per venue would imply a distinction that does not exist at this level.
+
+    ``levels`` stores the full per-timeframe breakdown, not just the aggregate. Phase 9
+    slices model performance by the regime that was in force at prediction time, and
+    the explanation panel has to show which timeframe said what — neither is
+    recoverable from a summary after the fact.
+    """
+
+    __tablename__ = "market_states"
+    __table_args__ = (
+        Index("ix_market_state_asset_time", "asset", "as_of"),
+        Index("ix_market_state_regime", "regime", "as_of"),
+    )
+
+    asset: Mapped[str] = mapped_column(String(32), primary_key=True)
+    as_of: Mapped[datetime] = _ts_column(primary_key=True)
+
+    bias: Mapped[str] = mapped_column(String(16))
+    alignment: Mapped[str] = mapped_column(String(32), index=True)
+    regime: Mapped[str] = mapped_column(String(24), index=True)
+    agreement: Mapped[float] = mapped_column(Float, default=0.0)
+    confidence: Mapped[float] = mapped_column(Float, default=0.0)
+    data_quality: Mapped[float] = mapped_column(Float, default=1.0)
+    interpretation: Mapped[str] = mapped_column(Text, default="")
+    levels: Mapped[dict[str, Any]] = mapped_column(JSON, default=dict)
+    evidence: Mapped[dict[str, Any]] = mapped_column(JSON, default=dict)
+    computed_at: Mapped[datetime] = _ts_column(default=utcnow)
+
+    def __repr__(self) -> str:  # pragma: no cover
+        return f"<MarketStateRow {self.asset} {self.as_of} {self.bias}/{self.regime}>"

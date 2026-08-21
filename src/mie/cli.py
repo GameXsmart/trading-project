@@ -15,6 +15,7 @@ and nothing here contains logic of its own.
     mie audit BTC 1h                  compare providers against each other
     mie features compute BTC 1h       compute features over stored history
     mie features show BTC 1h          show the latest feature vector
+    mie state BTC                     multi-timeframe market state
 """
 
 from __future__ import annotations
@@ -33,6 +34,7 @@ from mie.core.logging import configure_logging, get_logger
 from mie.core.timeframes import Timeframe, utcnow
 from mie.core.types import IngestStatus
 from mie.ingestion.service import IngestionService
+from mie.state.engine import StateEngine
 from mie.storage.repositories import (
     FeatureRepository,
     IngestRunRepository,
@@ -635,6 +637,80 @@ def features_show(
             console.print(table)
 
     asyncio.run(_run())
+
+
+@app.command("state")
+def market_state(
+    asset: str = typer.Argument(..., help="Canonical symbol, e.g. BTC."),
+    timeframes: str | None = typer.Option(None, "--timeframes", help="Comma-separated."),
+    source: str = typer.Option("binance", "--source"),
+    save: bool = typer.Option(False, "--save", help="Persist the computed state."),
+) -> None:
+    """Show the hierarchical multi-timeframe market state for an asset."""
+
+    async def _run() -> None:
+        settings = _settings()
+        frames = [_tf(t.strip()) for t in timeframes.split(",")] if timeframes else None
+        async with IngestionService(settings) as service:
+            engine = StateEngine(service.db, settings, source=source, timeframes=frames)
+            state = await engine.build(asset, persist=save)
+
+            console.print(f"\n[bold]{state.asset}[/bold]  {state.as_of:%Y-%m-%d %H:%M} UTC")
+            console.print(
+                f"bias [bold]{state.bias}[/bold] | {state.alignment} | regime "
+                f"[bold]{state.regime}[/bold]"
+            )
+            console.print(
+                f"agreement {_pct_markup(state.agreement)} | confidence "
+                f"{_score_markup(state.confidence)} | data quality "
+                f"{_score_markup(state.data_quality)}\n"
+            )
+
+            table = Table(title="Timeframe hierarchy", header_style="bold")
+            for column in ("tf", "direction", "strength", "confidence", "as of"):
+                table.add_column(
+                    column, justify="right" if column in ("strength", "confidence") else "left"
+                )
+            for level in state.timeframes:
+                table.add_row(
+                    str(level.timeframe),
+                    _direction_markup(level.direction),
+                    f"{level.strength:.2f}",
+                    _score_markup(level.confidence),
+                    f"{level.as_of:%m-%d %H:%M}",
+                )
+            console.print(table)
+
+            console.print(f"\n[bold]Interpretation[/bold]\n{state.interpretation}\n")
+
+            leading = next((s for s in state.timeframes if s.is_usable), None)
+            if leading and leading.evidence:
+                console.print(f"[bold]Why ({leading.timeframe})[/bold]")
+                for item in leading.evidence[:6]:
+                    console.print(f"  [green]+[/green] {item}")
+                for item in leading.counter_evidence[:4]:
+                    console.print(f"  [red]-[/red] {item}")
+            if state.conflicts:
+                console.print("\n[bold]Conflicts[/bold]")
+                for conflict in state.conflicts:
+                    console.print(f"  [yellow]! {conflict}[/yellow]")
+
+            console.print(
+                "\n[dim]Analytical assessment only - probabilities and scenarios, "
+                "never guarantees. Not investment advice.[/dim]"
+            )
+
+    asyncio.run(_run())
+
+
+def _direction_markup(direction: object) -> str:
+    """Colour a direction label: green for up, red for down, dim for neutral."""
+    text = str(direction)
+    if "up" in text:
+        return f"[green]{text}[/green]"
+    if "down" in text:
+        return f"[red]{text}[/red]"
+    return f"[dim]{text}[/dim]"
 
 
 def main() -> None:

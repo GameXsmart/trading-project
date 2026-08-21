@@ -112,7 +112,7 @@ Chosen per workload, not per fashion.
 │   ├── ingestion/     # backfill, live poller, orchestration service
 │   ├── quality/       # validators, anomaly detection, scoring
 │   ├── features/      # incremental indicator engine + market structure
-│   ├── state/         # (Phase 3) multi-timeframe market state
+│   ├── state/         # multi-timeframe market state + regime
 │   ├── patterns/      # (Phase 4) pattern + sequence discovery
 │   ├── news/          # (Phase 5) news ingestion + impact model
 │   ├── models/        # (Phase 6) predictors A-H
@@ -133,7 +133,7 @@ Entries annotated with a phase are the **target** layout and do not exist yet:
 directories for unbuilt phases are intentionally absent rather than filled with stubs,
 because an empty module pretending to be a model is worse than no module. What is on
 disk today is `core`, `config`, `storage`, `providers`, `ingestion`, `quality`,
-`features`, plus `config/`, `sql/`, `tests/` and `docs/`.
+`features`, `state`, plus `config/`, `sql/`, `tests/` and `docs/`.
 
 ---
 
@@ -318,5 +318,5 @@ inputs is not.
 
 Phases are gated: a phase ships only when the previous one is correct and tested.
 See [`docs/PHASES.md`](docs/PHASES.md) for the gate criteria of each.
-**Phases 1 (ingestion + database) and 2 (feature engine) are implemented.**
-Phases 3+ are designed above and not yet built.
+**Phases 1 (ingestion + database), 2 (feature engine) and 3 (multi-timeframe
+state) are implemented.** Phases 4+ are designed above and not yet built.
