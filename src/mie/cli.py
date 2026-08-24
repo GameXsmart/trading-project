@@ -28,6 +28,7 @@ and nothing here contains logic of its own.
     mie predict BTC                   record predictions for later scoring
     mie learn                         resolve, measure, reweight - and say what changed
     mie serve                         the read-only API and dashboard
+    mie alerts                        evaluate the alert rules once
 """
 
 from __future__ import annotations
@@ -36,12 +37,16 @@ import asyncio
 import contextlib
 import signal
 from datetime import timedelta
+from pathlib import Path
 from statistics import median
 
 import typer
 from rich.console import Console
 from rich.table import Table
 
+from mie.alerts.channels import ConsoleChannel, channels_from_env
+from mie.alerts.engine import AlertEngine
+from mie.alerts.rules import AlertContext
 from mie.backtest.harness import WalkForwardHarness
 from mie.backtest.leakage import LeakageProbe, Verdict
 from mie.backtest.windows import FoldScheme
@@ -1756,6 +1761,133 @@ def serve(
         factory=True,
         log_level="info",
     )
+
+
+@app.command("alerts")
+def alerts(
+    timeframe: str = typer.Option("1h", "--timeframe"),
+    horizon: int = typer.Option(12, "--horizon"),
+    source: str = typer.Option("binance", "--source"),
+    feed: str = typer.Option("data/alerts.jsonl", "--feed", help="Local JSONL feed path."),
+    dry_run: bool = typer.Option(
+        False, "--dry-run", help="Evaluate and report, deliver nowhere."
+    ),
+) -> None:
+    """Evaluate the alert rules once across the stored universe.
+
+    Destinations are read from the environment and never from config. With none set,
+    alerts go to the console and a local JSONL feed; Discord and Telegram appear only
+    when their variables are present, because sending on someone's behalf is not
+    something to inherit from a default.
+    """
+
+    async def _run() -> None:
+        settings = _settings()
+        frame = _tf(timeframe)
+        contexts: list[AlertContext] = []
+
+        async with IngestionService(settings) as service, service.db.session() as session:
+            ohlcv = OHLCVRepository(session)
+            quality = QualityRepository(session)
+            news_rows = await NewsEventRepository(session).recent(hours=24, limit=40)
+
+            series: dict[str, list] = {}
+            for symbol in settings.universe.symbols():
+                rows = await ohlcv.fetch_recent(symbol, frame, source=source, limit=400)
+                if len(rows) >= 150:
+                    series[symbol] = [_row_to_candle(r, symbol, frame, source) for r in rows]
+
+            for symbol, candles in series.items():
+                returns = _returns(candles)
+                score = await quality.get_score(source, symbol, frame)
+                peers = {
+                    other: _correlation_of(returns, _returns(bars))
+                    for other, bars in series.items()
+                    if other != symbol
+                }
+                baseline = {
+                    other: _correlation_of(returns[:-48], _returns(bars)[:-48])
+                    for other, bars in series.items()
+                    if other != symbol
+                }
+                contexts.append(
+                    AlertContext(
+                        asset=symbol,
+                        timeframe=str(frame),
+                        at=frame.close_time(candles[-1].open_time),
+                        candles=candles,
+                        regime=_regime_of(candles),
+                        previous_regime=_regime_of(candles[:-12]),
+                        data_quality=float(score),
+                        correlation_now=peers,
+                        correlation_baseline=baseline,
+                        news=[n for n in news_rows if symbol in (n.relevance or {})],
+                    )
+                )
+
+        channels = [] if dry_run else channels_from_env(feed_path=Path(feed))
+        engine = AlertEngine(channels=channels or [ConsoleChannel()])
+        run = await engine.run(contexts)
+
+        console.print(
+            f"\n[bold]alerts[/bold]  {len(contexts)} assets evaluated on {frame}"
+        )
+        if not run.raised:
+            console.print(
+                "[dim]nothing raised. Most rules describe volatility and system state; "
+                "the directional ones cannot fire because no model has earned a "
+                "weight.[/dim]"
+            )
+            return
+
+        table = Table(header_style="bold", box=None, pad_edge=False)
+        for column in ("", "severity", "asset", "alert"):
+            table.add_column(column)
+        for decision in run.decisions:
+            alert = decision.alert
+            colour = {
+                "critical": "red", "important": "yellow",
+                "notable": "cyan", "info": "dim",
+            }[alert.level.label]
+            table.add_row(
+                "[green]sent[/green]" if decision.delivered else "[dim]held[/dim]",
+                f"[{colour}]{alert.level.label}[/{colour}]",
+                alert.asset,
+                alert.title + ("" if decision.delivered else f"  [dim]({decision.reason})[/dim]"),
+            )
+        console.print(table)
+
+        capacity = engine.capacity()
+        console.print(
+            f"\n{run.summary()}  [dim]capacity left: {capacity['hour']}/hour, "
+            f"{capacity['day']}/day[/dim]"
+        )
+        if run.failures():
+            for failure in run.failures():
+                console.print(f"[red]delivery failed[/red] {failure}")
+        console.print(
+            "[dim]Rules that describe volatility and system state can fire. Directional "
+            "alerts require a published prediction, and none is published.[/dim]"
+        )
+
+    asyncio.run(_run())
+
+
+def _returns(candles) -> list[float]:
+    closes = [c.close for c in candles if c.close > 0]
+    return [(closes[i] - closes[i - 1]) / closes[i - 1] for i in range(1, len(closes))]
+
+
+def _correlation_of(left: list[float], right: list[float]) -> float:
+    from mie.api.app import _correlation
+
+    return _correlation(left, right)
+
+
+def _regime_of(candles) -> str:
+    from mie.models.runner import _regime_of as regime
+
+    return regime(candles) if candles else "unknown"
 
 
 def main() -> None:

@@ -1,0 +1,35 @@
+Alert volume - raw output
+=========================
+
+The Phase 11 gate is a rate budget, so this measures the thing the gate is about:
+how many alerts a reader would actually have received.
+
+Replayed hour by hour over the real stored history for BTC, ETH and SOL on 1h, with
+the default budget (6/hour, 30/day, 4h cooldown per kind and asset, 12h dedup window,
+plus a small reserve that only CRITICAL alerts may draw on).
+
+"raised" counts what the rules produced; "delivered" counts what a human would have
+been shown. The gap is the whole point of the phase, and it is reported to the reader
+as a periodic digest rather than swallowed.
+
+Note the absence: zero directional alerts across 29 days, because no model has earned
+a weight and the ensemble never publishes.
+
+Committed as evidence. See docs/PHASES.md, Phase 11, for the analysis.
+
+
+REAL HISTORY — BTC/ETH/SOL 1h
+  span                29.1 days (700 evaluations)
+  raised              1238
+  delivered           422
+  suppressed          816
+  busiest hour        5  (ceiling 6 + 2 reserve)
+  busiest 24h         30  (ceiling 30 + 8 reserve)
+  mean per day        14.5
+  delivered by kind:
+    regime_change            118
+    suppression_digest       113
+    volume_anomaly           93
+    volatility_compression   52
+    volatility_expansion     46
+  digests emitted     113

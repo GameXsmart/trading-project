@@ -778,15 +778,88 @@ changes nothing about what the API will emit.
 
 ---
 
-## Phase 11 — Alerts
+## Phase 11 — Alerts ✅ COMPLETE (result: 66% of what the rules raise is suppressed)
 
-**Build**: configurable rules (strong/super prediction, regime change, breakout,
-reversal, volume anomaly, liquidation spike, major news, correlation breakdown, model
-disagreement, prediction invalidation) over browser, desktop, Discord, Telegram, email.
+**Delivered**
 
-**Gate**
-- Alert volume under a simulated volatile week stays within a rate budget. An alerting
-  system nobody reads is worse than none.
+- **Eleven rules** (`alerts/rules.py`), split by what the measurements actually
+  support: volatility and structure (volume anomaly, expansion, compression, regime
+  change, correlation breakdown, liquidation proxy, major news), the system's own
+  trustworthiness (data quality, model disagreement, prediction invalidated), and two
+  directional kinds that cannot currently fire.
+- **A rate budget** (`alerts/budget.py`) with four mechanisms in order — dedup,
+  cooldown, hourly and daily ceilings, and a small reserve only `CRITICAL` may draw on.
+- **Suppression that is never silent**: held alerts are counted by reason and surfaced
+  as a periodic digest, which is itself exempt from the budget.
+- **Delivery** (`alerts/channels.py`) to console, a local JSONL feed, Discord,
+  a generic webhook and Telegram. Every destination is read from the environment and
+  nowhere else; an unconfigured channel is *disabled*, not silently broken.
+- CLI: `mie alerts`.
+
+**Gate: met, and measured on real history rather than only on a synthetic week.**
+
+> *Alert volume under a simulated volatile week stays within a rate budget. An alerting
+> system nobody reads is worse than none.*
+
+The synthetic hostile week is in the test suite. The more useful number came from
+replaying **29 days of real BTC/ETH/SOL history**, hour by hour, through the engine
+with default settings:
+
+| | |
+|---|---|
+| Rules raised | 1,238 |
+| **Delivered to a reader** | **422** |
+| Suppressed | **816 (66%)** |
+| Busiest single hour | **5** (ceiling 6, plus 2 reserve) |
+| Busiest 24 hours | **30** (ceiling 30, plus 8 reserve) |
+| Mean per day, three assets | 14.5 |
+
+Of those 422, a quarter are the suppression digests themselves. Actual events run at
+roughly 3.5 per asset per day — which is about the most a person will keep reading.
+
+| Delivered by kind | |
+|---|---|
+| `regime_change` | 118 |
+| `suppression_digest` | 113 |
+| `volume_anomaly` | 93 |
+| `volatility_compression` | 52 |
+| `volatility_expansion` | 46 |
+| **`strong_prediction`, `super_prediction`** | **0** |
+
+**The absence is the finding.** Not one directional alert in 29 days, because no model
+has earned a weight and the ensemble never publishes. Both rules are implemented and
+tested against synthetic input, so the silence is a measured result rather than an
+unwritten branch — deleting them would hide the finding, and loosening them would
+fabricate one.
+
+**A directional alert carries the same burden as a published prediction.** `Alert`
+refuses to construct a `STRONG_PREDICTION` or `SUPER_PREDICTION` without a non-zero
+confidence and at least one non-blank invalidation condition — the Phase 10 lesson
+applied to a second surface. Non-directional kinds carry no such burden, because a
+volume anomaly claims only that movement is likely to be larger than usual and says
+nothing about the sign.
+
+**One rendering path.** Every channel sends `Alert.render()`. A channel that built its
+own message could quietly drop the confidence or the invalidation, and nobody would
+notice until it mattered.
+
+**Two bugs worth naming.**
+
+The first was in a *test fixture*, and it was instructive. The volatile week spiked
+volume every fifth bar, which made the median absolute deviation of the volume series
+exactly zero — most bars identical — so the detector correctly reported nothing at all.
+The rule was right and the fixture was wrong. Real volume does not look like that.
+
+The second was mine, found by reading the output: suppression digests were being filed
+under `AlertKind.DATA_QUALITY`, so 113 housekeeping notices were indistinguishable from
+a broken feed in any count, chart or filter built on top. Digests now have their own
+kind, with a regression test.
+
+**Nothing was ever sent to an external service while building this.** The webhook and
+Telegram transports are exercised against a local in-process stub only, and the
+environment-driven configuration is tested with an injected mapping rather than by
+setting real variables. Sending on someone's behalf is an outward-facing action, so it
+requires deliberate configuration and does not arrive by default.
 
 ---
 

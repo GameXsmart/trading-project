@@ -10,8 +10,8 @@ produces **probabilistic, uncertainty-bearing** assessments of market state.
 **Status: Phases 1 (ingestion + database), 2 (feature engine), 3 (multi-timeframe
 market state), 4 (pattern and sequence discovery), 5 (news intelligence), 6
 (prediction models), 7 (ensemble, calibration, confidence), 8 (walk-forward
-backtesting), 9 (self-evaluation and learning) and 10 (API and dashboard) are complete
-and tested.**
+backtesting), 9 (self-evaluation and learning), 10 (API and dashboard) and 11 (alerts)
+are complete and tested.**
 
 **The headline result: none of the eight models beats a climatology baseline, so the
 ensemble publishes nothing.** See
@@ -281,6 +281,53 @@ unaffected.
 
 ---
 
+## What Phase 11 delivers — alerts that respect a budget
+
+The failure mode of alerting is not missing an event. It is producing so many that the
+reader stops looking, at which point the system has negative value: it consumed
+attention and then trained someone to ignore the one alert that mattered.
+
+Four mechanisms, in order: **dedup** (have I already said exactly this?), **cooldown**
+(have I said something of this kind about this asset recently?), **budget** (have I
+already spent this hour's attention?), and a small **reserve** only `CRITICAL` may draw
+on, so a noisy hour cannot crowd out the message that a data feed collapsed.
+
+And the property that matters most: **suppression is never silent.** Held alerts are
+counted by reason and surfaced as a periodic digest — which is itself exempt from the
+budget, because a suppression notice that can be suppressed fails exactly when it is
+needed.
+
+**Measured over 29 days of real BTC/ETH/SOL history**, replayed hour by hour:
+
+| | |
+|---|---|
+| Rules raised | 1,238 |
+| **Delivered** | **422** |
+| Suppressed | **816 (66%)** |
+| Busiest hour | 5 (ceiling 6 + 2 reserve) |
+| Busiest 24h | 30 (ceiling 30 + 8 reserve) |
+
+Delivered: `regime_change` 118, `suppression_digest` 113, `volume_anomaly` 93,
+`volatility_compression` 52, `volatility_expansion` 46 — and **zero directional
+alerts**, because no model has earned a weight and the ensemble never publishes. Both
+directional rules are implemented and tested against synthetic input, so the silence is
+a measured result rather than an unwritten branch.
+
+A directional alert carries the same burden as a published prediction: `Alert` refuses
+to construct one without a confidence and an invalidation condition. Non-directional
+kinds carry no such burden, because a volume anomaly claims only that movement will
+likely be larger than usual and says nothing about the sign.
+
+Destinations are read from the environment and never from code — an unconfigured
+channel is *disabled*, not silently broken, so "no alerts arrived" can be told apart
+from "no alerts were sent".
+
+```bash
+mie alerts --dry-run
+```
+
+---
+
 ## Quick start
 
 Requires Python 3.12+. No database server, no Docker, nothing else.
@@ -355,6 +402,7 @@ metrics, and quality scoring — until you stop it with Ctrl-C.
 | `mie predict BTC` | Record predictions for later scoring, before outcomes exist. |
 | `mie learn` | Resolve, measure, reweight — and say whether anything changed. |
 | `mie serve` | The read-only API and dashboard on http://127.0.0.1:8000. |
+| `mie alerts` | Evaluate the alert rules once, within the rate budget. |
 
 ---
 
@@ -424,6 +472,7 @@ rather than buried.
 | Does the learning loop learn anything? | **Partly, and not the part that matters.** Over 8,100 resolved predictions it granted **0** of 160 weight slices a non-zero weight, and adopted **6** of 42 calibration curves. It learned that six forecasters are miscalibrated in specific regimes — including climatology in downtrends — not that any model is worth trusting. |
 | What is the single clearest measured result? | **Saying nothing beats climatology, and climatology beats every opinion.** The three best forecasters by Brier score exactly 0.6667 — the uniform distribution — because they abstain on every point. |
 | What does the dashboard show? | **"Insufficient evidence", with the specific conditions that failed.** Three of the super-prediction gate's nine conditions pass; the rest are reported with their numbers. That is the honest rendering of everything above. |
+| How much does it alert? | **422 of 1,238 raised, over 29 days across three assets** — 66% suppressed, and reported as a digest rather than swallowed. Zero of those were directional. |
 
 What *does* survive measurement is volatility clustering: volume spikes and range
 compression genuinely precede larger-than-usual movement. They say nothing about

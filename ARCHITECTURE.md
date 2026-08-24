@@ -120,7 +120,7 @@ Chosen per workload, not per fashion.
 │   ├── backtest/      # purged folds, leakage probe, survivorship
 │   ├── learning/      # prediction store, resolver, sliced metrics, reweighting
 │   ├── api/           # read-only FastAPI service + the dashboard it serves
-│   └── alerts/        # (Phase 11) alert rules + channels
+│   └── alerts/        # rules, a rate budget that protects attention, channels
 │       └── static/    # the dashboard page (no build step; see PHASES.md)
 ├── config/            # default.yaml, assets.yaml — no secrets
 ├── sql/               # TimescaleDB-specific DDL
@@ -327,6 +327,10 @@ read as if it were meaningful.
 
 ## 12. Safety boundary
 
+- Outbound delivery — Discord, Telegram, webhooks — is read from the environment and
+  never from code or a checked-in config file, and a channel with no configured target
+  is disabled rather than silently failing. Nothing is enabled by default except the
+  console and a local file: sending on someone's behalf is deliberate, not inherited.
 - No order-execution code, no exchange trading keys, no withdrawal permissions.
   Providers use **public, read-only endpoints**; where a key is ever needed it must be
   read-only and supplied via environment variable.
@@ -348,8 +352,8 @@ See [`docs/PHASES.md`](docs/PHASES.md) for the gate criteria of each.
 **Phases 1 (ingestion + database), 2 (feature engine), 3 (multi-timeframe state),
 4 (pattern and sequence discovery), 5 (news intelligence), 6 (prediction models),
 7 (ensemble, calibration, confidence), 8 (walk-forward backtesting), 9
-(self-evaluation and learning) and 10 (API and dashboard) are implemented.** Phases 11+
-are designed above and not yet built.
+(self-evaluation and learning), 10 (API and dashboard) and 11 (alerts) are
+implemented.** Phase 12 is designed above and not yet built.
 
 **Measured result so far: no model beats a climatology baseline** — verified across 48
 configurations spanning forecast reaches from 3 hours to 60 days, 2,032 slices, none
