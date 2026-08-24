@@ -65,6 +65,7 @@ from mie.models.runner import ContextSource
 from mie.models.types import Horizon, Outcome
 from mie.storage.db import Database
 from mie.storage.repositories import (
+    DerivativesRepository,
     FeatureRepository,
     NewsEventRepository,
     OHLCVRepository,
@@ -169,6 +170,10 @@ class _Engine:
                 source=self.source,
                 start=rows[0].open_time if rows else None,
             )
+            derivatives = DerivativesRepository(session)
+            since = rows[0].open_time if rows else None
+            funding = await derivatives.funding_history(asset, start=since)
+            open_interest = await derivatives.open_interest_history(asset, start=since)
         if len(rows) < 250:
             raise HTTPException(
                 status_code=404,
@@ -181,7 +186,14 @@ class _Engine:
         source_name = self.source
         candles = [_row_to_candle(r, asset, timeframe, source_name) for r in rows]
         history = [(f.open_time, f.payload) for f in features]
-        source = ContextSource(asset, timeframe, candles, history)
+        source = ContextSource(
+            asset,
+            timeframe,
+            candles,
+            history,
+            funding=funding,
+            open_interest=open_interest,
+        )
         context = source.context_at(len(source.candles) - 1, Horizon(bars=horizon_bars, timeframe=timeframe))
         if context is None:
             raise HTTPException(status_code=503, detail="could not build a prediction context")

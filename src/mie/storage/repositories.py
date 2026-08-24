@@ -562,6 +562,45 @@ class DerivativesRepository:
         await self.session.execute(stmt)
         return len(rows)
 
+    async def funding_history(
+        self, asset: str, start: datetime | None = None, limit: int = 20000
+    ) -> list[tuple[datetime, float]]:
+        """Funding rates as (timestamp, rate), oldest first.
+
+        Returned as plain tuples rather than rows because that is what a prediction
+        context takes, and handing models an ORM object would give them a live session
+        and, through it, the whole database.
+        """
+        stmt = (
+            select(FundingRateRow.ts, FundingRateRow.rate)
+            .join(Instrument, Instrument.id == FundingRateRow.instrument_id)
+            .join(Asset, Asset.id == Instrument.asset_id)
+            .where(Asset.symbol == asset.upper())
+            .order_by(FundingRateRow.ts)
+            .limit(limit)
+        )
+        if start is not None:
+            stmt = stmt.where(FundingRateRow.ts >= ensure_utc(start))
+        return [(ts, float(rate)) for ts, rate in (await self.session.execute(stmt)).all()]
+
+    async def open_interest_history(
+        self, asset: str, start: datetime | None = None, limit: int = 20000
+    ) -> list[tuple[datetime, float]]:
+        """Open interest as (timestamp, contracts), oldest first."""
+        stmt = (
+            select(OpenInterestRow.ts, OpenInterestRow.open_interest)
+            .join(Instrument, Instrument.id == OpenInterestRow.instrument_id)
+            .join(Asset, Asset.id == Instrument.asset_id)
+            .where(Asset.symbol == asset.upper())
+            .order_by(OpenInterestRow.ts)
+            .limit(limit)
+        )
+        if start is not None:
+            stmt = stmt.where(OpenInterestRow.ts >= ensure_utc(start))
+        return [
+            (ts, float(value)) for ts, value in (await self.session.execute(stmt)).all()
+        ]
+
     async def latest_funding(self, asset: str) -> FundingRateRow | None:
         stmt = (
             select(FundingRateRow)

@@ -77,6 +77,7 @@ from mie.patterns.similarity import SimilarityEngine
 from mie.perf.benchmarks import LATENCY_BUDGETS, BenchmarkReport, measure, measure_async
 from mie.state.engine import StateEngine
 from mie.storage.repositories import (
+    DerivativesRepository,
     FeatureRepository,
     IngestRunRepository,
     NewsEventRepository,
@@ -1109,6 +1110,12 @@ async def _evaluation_contexts(
             )
             if peer_rows:
                 peers[other] = [_row_to_candle(r, other, frame, source) for r in peer_rows]
+        # Derivatives, without which the orderflow model has nothing to read and
+        # abstains on every point — which for a long time looked like a finding about
+        # markets and was actually a missing wire.
+        derivatives = DerivativesRepository(session)
+        funding = await derivatives.funding_history(asset)
+        open_interest = await derivatives.open_interest_history(asset)
 
     if len(rows) < 600:
         console.print(
@@ -1120,7 +1127,15 @@ async def _evaluation_contexts(
     candles = [_row_to_candle(r, asset, frame, source) for r in rows]
     history = [(f.open_time, f.payload) for f in features]
     contexts = build_contexts(
-        ContextSource(asset, frame, candles, history, peers=peers),
+        ContextSource(
+            asset,
+            frame,
+            candles,
+            history,
+            peers=peers,
+            funding=funding,
+            open_interest=open_interest,
+        ),
         Horizon(bars=horizon, timeframe=frame),
         warmup=450,
     )
@@ -1415,6 +1430,9 @@ def backtest(
         async with IngestionService(settings) as service, service.db.session() as session:
             rows = await OHLCVRepository(session).fetch(asset, frame, source=source)
             features = await FeatureRepository(session).fetch(asset, frame, source=source)
+            derivatives = DerivativesRepository(session)
+            funding = await derivatives.funding_history(asset)
+            open_interest = await derivatives.open_interest_history(asset)
 
         if len(rows) < 800:
             console.print(
@@ -1425,7 +1443,12 @@ def backtest(
 
         candles = [_row_to_candle(r, asset, frame, source) for r in rows]
         context_source = ContextSource(
-            asset, frame, candles, [(f.open_time, f.payload) for f in features]
+            asset,
+            frame,
+            candles,
+            [(f.open_time, f.payload) for f in features],
+            funding=funding,
+            open_interest=open_interest,
         )
         harness = WalkForwardHarness(
             folds=folds, scheme=chosen_scheme, run_probe=probe, probe=LeakageProbe(max_points=12)

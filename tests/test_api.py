@@ -341,6 +341,75 @@ class TestFreshness:
         assert rows["BTC"]["price"] == pytest.approx(series[-1].close, abs=1e-6)
 
 
+class TestDerivativesReachTheModels:
+    """A wire that was never connected, and went unnoticed for eleven phases.
+
+    Funding and open interest were collected but never passed into a prediction
+    context, so the orderflow model abstained on every point in every evaluation.
+    That looked like a finding about markets and was a missing argument.
+    """
+
+    async def test_funding_history_round_trips(self, database, settings) -> None:
+        from mie.core.types import FundingRate
+        from mie.storage.repositories import DerivativesRepository, ReferenceRepository
+
+        source = _source_name(settings)
+        points = [
+            FundingRate(
+                asset="BTC",
+                source=source,
+                ts=FIXED_NOW - timedelta(hours=8 * i),
+                rate=0.0001 * (i + 1),
+            )
+            for i in range(6)
+        ]
+        async with database.session() as session:
+            ReferenceRepository.clear_cache()
+            await DerivativesRepository(session).upsert_funding(points)
+            await session.commit()
+        async with database.session() as session:
+            history = await DerivativesRepository(session).funding_history("BTC")
+
+        assert len(history) == len(points)
+        assert [t for t, _ in history] == sorted(t for t, _ in history)
+        assert all(isinstance(rate, float) for _, rate in history)
+
+    async def test_the_live_context_carries_funding(
+        self, client, database, settings
+    ) -> None:
+        """The regression that matters: the API's prediction path must pass it on."""
+        from mie.core.types import FundingRate
+        from mie.storage.repositories import (
+            DerivativesRepository,
+            OHLCVRepository,
+            ReferenceRepository,
+        )
+
+        source = _source_name(settings)
+        series = candles(drifting(400))
+        async with database.session() as session:
+            ReferenceRepository.clear_cache()
+            await OHLCVRepository(session).upsert_candles(
+                [c.model_copy(update={"source": source}) for c in series]
+            )
+            await DerivativesRepository(session).upsert_funding(
+                [
+                    FundingRate(
+                        asset="BTC",
+                        source=source,
+                        ts=HOUR.close_time(bar.open_time),
+                        rate=0.0001 * (index % 7),
+                    )
+                    for index, bar in enumerate(series[::8])
+                ]
+            )
+            await session.commit()
+
+        result, _ = await client._transport.app.state.engine.predict("BTC", HOUR, 6)
+        orderflow = next(p for p in result.members if p.model_id == "orderflow")
+        assert "insufficient funding history" not in str(orderflow.evidence)
+
+
 class TestStartup:
     async def test_serving_without_a_schema_fails_clearly(self, settings) -> None:
         """One legible failure at boot beats nine illegible ones at request time."""
