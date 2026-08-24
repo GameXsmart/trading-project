@@ -179,15 +179,24 @@ class Predictor(ABC):
         counter_evidence: Sequence[PredictionEvidence] = (),
         invalidation: Sequence[str] = (),
         expected_move_pct: float | None = None,
+        apply_data_quality: bool = True,
     ) -> Prediction:
-        """Assemble a prediction, applying the rules every model must obey."""
+        """Assemble a prediction, applying the rules every model must obey.
+
+        ``apply_data_quality`` exists for one caller: the Phase 7 ensemble, whose
+        confidence is a product of measured factors that already includes the trust
+        score. Multiplying it in again would penalise degraded data twice and make the
+        published number stop matching its own published decomposition.
+        """
         threshold = context.threshold_pct
         volatility = _expected_volatility(context)
 
         # Data quality multiplies into confidence here rather than in each model, so
         # no model can forget it. This is where Phase 1's trust score reaches the
         # published output.
-        adjusted = max(0.0, min(1.0, confidence)) * max(0.0, min(1.0, context.data_quality))
+        adjusted = max(0.0, min(1.0, confidence))
+        if apply_data_quality:
+            adjusted *= max(0.0, min(1.0, context.data_quality))
 
         return Prediction(
             model_id=self.model_id,

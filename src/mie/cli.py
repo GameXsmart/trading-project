@@ -22,6 +22,8 @@ and nothing here contains logic of its own.
     mie news                          deduplicated, classified news feed
     mie news-impact BTC               measured impact of news on volatility
     mie evaluate BTC                  walk-forward model skill vs baseline
+    mie calibrate BTC                 fit and judge per-model calibration
+    mie ensemble BTC                  the ensemble, its confidence and the gate
 """
 
 from __future__ import annotations
@@ -39,13 +41,16 @@ from mie.config.settings import Settings, load_settings
 from mie.core.logging import configure_logging, get_logger
 from mie.core.timeframes import Timeframe, utcnow
 from mie.core.types import IngestStatus
+from mie.ensemble.calibration import CalibrationLibrary, reliability_diagram
+from mie.ensemble.gate import SuperPredictionGate
+from mie.ensemble.meta import EnsembleModel, SkillWeights
 from mie.features.engine import _row_to_candle
 from mie.ingestion.service import IngestionService
 from mie.models.baselines import ClimatologyBaseline, PersistenceBaseline
 from mie.models.evaluation import WalkForwardEvaluator, summarise_thresholds
 from mie.models.predictors import ALL_MODELS
 from mie.models.runner import ContextSource, build_contexts
-from mie.models.types import Horizon
+from mie.models.types import Horizon, Outcome
 from mie.news.engine import NewsEngine
 from mie.news.impact import ImpactValidator
 from mie.patterns.evaluation import PatternEvaluator
@@ -1063,6 +1068,48 @@ def news_impact(
     asyncio.run(_run())
 
 
+async def _evaluation_contexts(
+    settings: Settings, asset: str, frame: Timeframe, horizon: int, source: str
+) -> list | None:
+    """Load stored history and build non-overlapping evaluation points.
+
+    Shared by ``evaluate``, ``calibrate`` and ``ensemble`` so that all three see
+    exactly the same data. Three commands each assembling their own view of history is
+    three chances for one of them to be subtly wrong about what was knowable when.
+    """
+    async with IngestionService(settings) as service, service.db.session() as session:
+        rows = await OHLCVRepository(session).fetch(asset, frame, source=source)
+        features = await FeatureRepository(session).fetch(asset, frame, source=source)
+        peers = {}
+        for other in settings.universe.symbols():
+            if other == asset.upper():
+                continue
+            peer_rows = await OHLCVRepository(session).fetch(
+                other, frame, source=source, limit=5000
+            )
+            if peer_rows:
+                peers[other] = [_row_to_candle(r, other, frame, source) for r in peer_rows]
+
+    if len(rows) < 600:
+        console.print(
+            f"[yellow]not enough history[/yellow] for {asset.upper()} {frame} "
+            f"({len(rows)} bars; need 600+)"
+        )
+        return None
+
+    candles = [_row_to_candle(r, asset, frame, source) for r in rows]
+    history = [(f.open_time, f.payload) for f in features]
+    contexts = build_contexts(
+        ContextSource(asset, frame, candles, history, peers=peers),
+        Horizon(bars=horizon, timeframe=frame),
+        warmup=450,
+    )
+    if not contexts:
+        console.print("[yellow]no evaluation points could be built[/yellow]")
+        return None
+    return contexts
+
+
 @app.command("evaluate")
 def evaluate(
     asset: str = typer.Argument(..., help="Canonical symbol, e.g. BTC."),
@@ -1089,37 +1136,8 @@ def evaluate(
             PersistenceBaseline() if baseline.startswith("pers") else ClimatologyBaseline()
         )
 
-        async with IngestionService(settings) as service, service.db.session() as session:
-            rows = await OHLCVRepository(session).fetch(asset, frame, source=source)
-            features = await FeatureRepository(session).fetch(asset, frame, source=source)
-            peers = {}
-            for other in settings.universe.symbols():
-                if other == asset.upper():
-                    continue
-                peer_rows = await OHLCVRepository(session).fetch(
-                    other, frame, source=source, limit=5000
-                )
-                if peer_rows:
-                    peers[other] = [
-                        _row_to_candle(r, other, frame, source) for r in peer_rows
-                    ]
-
-        if len(rows) < 600:
-            console.print(
-                f"[yellow]not enough history[/yellow] for {asset.upper()} {frame} "
-                f"({len(rows)} bars; need 600+)"
-            )
-            return
-
-        candles = [_row_to_candle(r, asset, frame, source) for r in rows]
-        history = [(f.open_time, f.payload) for f in features]
-        contexts = build_contexts(
-            ContextSource(asset, frame, candles, history, peers=peers),
-            Horizon(bars=horizon, timeframe=frame),
-            warmup=450,
-        )
-        if not contexts:
-            console.print("[yellow]no evaluation points could be built[/yellow]")
+        contexts = await _evaluation_contexts(settings, asset, frame, horizon, source)
+        if contexts is None:
             return
 
         report = WalkForwardEvaluator(chosen).evaluate([m() for m in ALL_MODELS], contexts)
@@ -1168,6 +1186,182 @@ def evaluate(
             "\n[dim]A model ships only by beating the baseline with significance across "
             "the whole family of slices tested. Climatology is the honest bar; beating "
             "persistence proves little, since even abstaining beats it.[/dim]"
+        )
+
+    asyncio.run(_run())
+
+
+@app.command("calibrate")
+def calibrate(
+    asset: str = typer.Argument(..., help="Canonical symbol, e.g. BTC."),
+    timeframe: str = typer.Option("1h", "--timeframe"),
+    horizon: int = typer.Option(12, "--horizon", help="Forecast horizon, in bars."),
+    source: str = typer.Option("binance", "--source"),
+) -> None:
+    """Fit per-model calibration and report whether it actually helped.
+
+    Each curve is fitted on an earlier window and judged on a later one. Curves that
+    do not improve held-out calibration are discarded and the model's own numbers kept,
+    so this command routinely reports that calibration was *not* adopted.
+    """
+
+    async def _run() -> None:
+        settings = _settings()
+        frame = _tf(timeframe)
+        contexts = await _evaluation_contexts(settings, asset, frame, horizon, source)
+        if contexts is None:
+            return
+
+        report = WalkForwardEvaluator(ClimatologyBaseline()).evaluate(
+            [m() for m in ALL_MODELS], contexts
+        )
+        library = CalibrationLibrary()
+        entries = [e for group in report.scored.values() for e in group]
+        library.fit(entries)
+
+        console.print(
+            f"\n[bold]{asset.upper()} {frame} +{horizon} bars[/bold] - calibration from "
+            f"{len(contexts)} non-overlapping points"
+        )
+
+        fitted = [r for r in library.records if r.curves]
+        skipped = len(library.records) - len(fitted)
+        table = Table(header_style="bold", box=None, pad_edge=False)
+        for column in ("model", "regime", "n", "ECE in", "ECE out", "delta", "verdict"):
+            table.add_column(column)
+        for record in sorted(fitted, key=lambda r: (r.model_id, r.regime)):
+            colour = "green" if record.improved else "dim"
+            table.add_row(
+                record.model_id, record.regime, str(record.samples),
+                f"{record.ece_before:.4f}", f"{record.ece_after:.4f}",
+                f"[{colour}]{record.improvement:+.4f}[/{colour}]",
+                f"[{colour}]{'kept' if record.improved else 'discarded'}[/{colour}]",
+            )
+        console.print(table)
+        if skipped:
+            console.print(
+                f"[dim]{skipped} further (model, regime) pairs had too little data to "
+                f"fit at all.[/dim]"
+            )
+
+        # Reliability of what the panel says as a whole, before any calibration.
+        pairs = [
+            (e.prediction.distribution.probability(outcome), 1.0 if e.actual is outcome else 0.0)
+            for e in entries
+            if e.prediction.confidence > 0
+            for outcome in Outcome
+        ]
+        diagram = reliability_diagram(pairs)
+        console.print(f"\n[bold]raw panel reliability[/bold] - ECE {diagram.ece:.4f}")
+        bins = Table(header_style="bold")
+        for column in ("stated", "n", "observed", "95% interval", "consistent"):
+            bins.add_column(column)
+        for entry in diagram.bins:
+            if entry.count < 20:
+                continue
+            mark = "[green]yes[/green]" if entry.contains_nominal else "[red]no[/red]"
+            bins.add_row(
+                f"{entry.lower:.1f}-{entry.upper:.1f}", str(entry.count),
+                f"{entry.observed:.3f}",
+                f"[{entry.observed_low:.3f}, {entry.observed_high:.3f}]", mark,
+            )
+        console.print(bins)
+        # 100 rather than the default 20: a headline claim about discrimination
+        # should not rest on a bin holding thirty observations.
+        populated = diagram.populated(100)
+        if len(populated) >= 2:
+            spread = populated[-1].observed - populated[0].observed
+            stated = populated[-1].mean_predicted - populated[0].mean_predicted
+            console.print(
+                f"discrimination: across a stated range of {stated:.3f} the observed "
+                f"frequency moves {spread:+.3f}"
+            )
+        console.print(
+            f"\nusable records: [bold]{len(library.usable())}[/bold] of "
+            f"{len(library.records)}"
+        )
+        console.print(
+            "[dim]A curve is kept only if it improved calibration on data it was not "
+            "fitted on. 'Discarded' means the fitted curve did worse out-of-sample than "
+            "leaving the model's own numbers alone - isotonic regression has enough "
+            "freedom to fit noise, and at these sample sizes it usually does.[/dim]"
+        )
+
+    asyncio.run(_run())
+
+
+@app.command("ensemble")
+def ensemble(
+    asset: str = typer.Argument(..., help="Canonical symbol, e.g. BTC."),
+    timeframe: str = typer.Option("1h", "--timeframe"),
+    horizon: int = typer.Option(12, "--horizon", help="Forecast horizon, in bars."),
+    source: str = typer.Option("binance", "--source"),
+    points: int = typer.Option(1, "--points", help="How many recent points to show."),
+) -> None:
+    """Run the full Phase 7 stack and show what, if anything, it will publish.
+
+    Weights come only from models that beat climatology out-of-sample with significance
+    across the whole family of slices tested. Where none do, the ensemble publishes
+    nothing and says which condition failed.
+    """
+
+    async def _run() -> None:
+        settings = _settings()
+        frame = _tf(timeframe)
+        contexts = await _evaluation_contexts(settings, asset, frame, horizon, source)
+        if contexts is None:
+            return
+
+        models = [m() for m in ALL_MODELS]
+        report = WalkForwardEvaluator(ClimatologyBaseline()).evaluate(models, contexts)
+        weights = SkillWeights.from_report(report)
+        library = CalibrationLibrary()
+        library.fit([e for group in report.scored.values() for e in group])
+
+        engine = EnsembleModel(models, weights, library)
+        gate = SuperPredictionGate()
+
+        console.print(
+            f"\n[bold]{asset.upper()} {frame} +{horizon} bars[/bold] - ensemble over "
+            f"{len(contexts)} non-overlapping points"
+        )
+        console.print(f"[dim]{weights.summary()}[/dim]")
+        console.print(
+            f"[dim]calibration: {len(library.usable())} usable of "
+            f"{len(library.records)} records[/dim]\n"
+        )
+
+        for context_, realised in contexts[-max(1, points) :]:
+            result = engine.predict_detailed(context_)
+            decision = gate.evaluate(result, library, [m.model_id for m in models])
+
+            console.print(
+                f"[bold]{context_.as_of:%Y-%m-%d %H:%M}[/bold] regime "
+                f"[cyan]{context_.regime}[/cyan]"
+            )
+            if result.published:
+                console.print(
+                    f"  [green]{result.prediction.distribution}[/green] "
+                    f"confidence {result.prediction.confidence:.0%}"
+                )
+            else:
+                console.print("  [yellow]insufficient evidence[/yellow]")
+                for reason in result.suppressed_because:
+                    console.print(f"    [dim]- {reason}[/dim]")
+            console.print(f"  [dim]{result.agreement.summary()}[/dim]")
+            console.print(f"  [dim]{result.factors.explain()}[/dim]")
+
+            for check in decision.checks:
+                mark = "[green]PASS[/green]" if check.passed else "[red]FAIL[/red]"
+                console.print(f"    {mark}  {check.name}: [dim]{check.detail}[/dim]")
+            console.print(
+                f"  -> [bold]{'SUPER PREDICTION' if decision.passed else 'no super prediction'}"
+                f"[/bold]  [dim](outcome was {realised:+.2f}%)[/dim]\n"
+            )
+
+        console.print(
+            "[dim]Analytical output only. Nothing here is an instruction to trade, and "
+            "no prediction is a guaranteed outcome.[/dim]"
         )
 
     asyncio.run(_run())

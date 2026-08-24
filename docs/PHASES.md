@@ -341,27 +341,105 @@ passes.
 
 ---
 
-## Phase 7 — Ensemble, calibration, and confidence
+## Phase 7 — Ensemble, calibration, and confidence ✅ COMPLETE (result: publishes nothing)
 
-**Build**: the meta-model, isotonic calibration per model per regime, the confidence
-computation, and the super-prediction gate.
+**Delivered**
 
-**Design constraints**
+- **Isotonic calibration** per model per regime (`ensemble/calibration.py`), fitted by
+  pool-adjacent-violators. Fitted on an earlier window, judged on a later one; a curve
+  that does not improve held-out calibration by a margin is discarded and the model's
+  own numbers kept. Records carry `fitted_through`, and applying one to a prediction
+  at or before that instant raises.
+- **Reliability diagrams** with Wilson intervals per bin, classwise ECE across all
+  three outcomes, and both the literal ±5-point criterion and the interval-based one.
+- **Independence-discounted agreement** (`ensemble/agreement.py`). Each model's vote is
+  weighted `1 / (1 + Σ jaccard(inputs_i, inputs_j))`, so six models reading the same
+  substrate count as roughly one opinion rather than six.
+- **Confidence as a product of six named, measured factors** (`ensemble/confidence.py`):
+  skill, calibration, agreement, data quality, sample size, regime familiarity. Every
+  published number can be decomposed into which factor limited it. Capped at 0.85.
+- **The meta-model** (`ensemble/meta.py`): a linear pool weighted by measured
+  out-of-sample skill, per regime, significant after Benjamini-Hochberg across every
+  slice tested. A model without demonstrated skill gets weight **zero**, not a floor.
+- **The super-prediction gate** (`ensemble/gate.py`): nine conjunctive conditions, each
+  reporting pass/fail with its numbers.
+- CLI: `mie calibrate`, `mie ensemble`.
 
-- **Probability ≠ confidence.** Probability is the outcome estimate; confidence is
-  how much the system trusts that estimate given regime, recent calibration, model
-  agreement, and data quality.
-- The Phase 1 trust score multiplies into published confidence here. This is where
-  requirement §20 becomes visible to a user.
-- Super predictions require ≥6 of 8 independent model families agreeing **and** a
-  calibration record in the current regime. Disagreement suppresses the signal
-  entirely — it never averages into a confident-looking number.
+**Gate: all three criteria met — by machinery that then refuses to publish.**
 
-**Gate**
-- Reliability diagrams are within tolerance: of everything published at 70%, 70% ±5%
-  occurs.
-- Deliberately induced model disagreement produces *no* super prediction.
-- Degrading the input feed measurably lowers published confidence.
+| Criterion | Result |
+|---|---|
+| Reliability within tolerance for what is published | Met vacuously — nothing is published. Measured directly on synthetic forecasters instead: a 70%-stated / 70%-observed panel passes, a 70%/40% panel fails. |
+| Induced disagreement produces no super prediction | Met. 4-vs-4 and 5-vs-3 splits both fail `families agreeing` and `no material dissent`; a unanimous panel with skill and calibration passes, proving the gate is not simply always false. |
+| Degrading the feed measurably lowers confidence | Met. Confidence falls monotonically with data quality end-to-end through the ensemble, and a feed at 0.25 suppresses publication entirely. |
+
+**Measured on live data: the ensemble publishes nothing, and the gate never fires.**
+
+Swept across BTC, ETH and SOL on 1h with a 12-bar horizon — **2,097 non-overlapping
+evaluation points**:
+
+| | BTC | ETH | SOL |
+|---|---|---|---|
+| Evaluation points | 699 | 699 | 699 |
+| Models with a non-zero weight | none | none | none |
+| Usable calibration records (of 42) | 3 | 10 | 6 |
+| **Ensemble published** | **0** | **0** | **0** |
+| **Super predictions** | **0** | **0** | **0** |
+
+Six of the gate's nine conditions fail at every single point on all three assets:
+`families agreeing`, `independent agreement`, `calibrated in this regime`,
+`demonstrated skill`, `confidence`, `ensemble published`. A seventh — `no material
+dissent` — fails on 54% to 62% of points depending on the asset.
+
+Two of those failures are worth separating, because they say different things. The
+`demonstrated skill` failure is inherited from Phase 6: nothing has earned a weight.
+But `families agreeing` fails independently of skill — **the eight models never reach
+six votes in one direction at any of the 2,097 points**, mostly because half of them
+abstain. Even if a model were later shown to have skill, the panel as currently
+constituted would still not produce a super prediction.
+
+**Calibration overfits at these sample sizes, and the code caught it.** Fitting isotonic
+curves for every (model, regime) pair on BTC 1h gave:
+
+| Outcome | Count |
+|---|---|
+| Curve kept (improved held-out ECE by ≥0.005) | **3 of 42** |
+| Curve fitted but discarded — *worse* out-of-sample | 21 |
+| Too little data to fit at all | 18 |
+
+The three survivors improved held-out ECE by +0.0051, +0.0069 and +0.0157. Everything
+else made calibration worse on data it had not seen — including climatology itself,
+which got worse in all four of its regimes. This is isotonic regression doing exactly
+what the module's docstring predicts: with enough freedom to fit noise and only ~100
+holdout points, it fits noise. The defence is the held-out judgement, and it worked.
+
+**What the raw panel's reliability actually shows.** Across 12,258 (probability,
+outcome) pairs on BTC:
+
+| Stated | n | Observed | 95% interval |
+|---|---|---|---|
+| 0.1–0.2 | 457 | 0.309 | [0.268, 0.352] |
+| 0.2–0.3 | 2,313 | 0.324 | [0.305, 0.344] |
+| 0.3–0.4 | 8,036 | 0.330 | [0.319, 0.340] |
+| 0.4–0.5 | 1,421 | 0.374 | [0.350, 0.400] |
+
+The models are systematically compressed toward the base rate: across a stated range of
+0.30 the observed frequency moves only about +0.065, and no populated bin's stated
+probability lies inside its own observed interval. There is a faint monotone signal —
+higher stated probability does correspond to higher observed frequency — but far too
+weak to be worth publishing, which is the same conclusion Phase 6 reached by a
+different route.
+
+**A leak the guard caught, in my own code.** The first sweep script fitted calibration
+over all history and then replayed it from the beginning of that same history. The
+`fitted_through` check raised immediately. The ensemble now treats an inapplicable
+record as *uncalibrated at that instant* rather than using it — the honest degradation
+— and a regression test covers it. Rolling refits belong to Phase 8.
+
+**Why build the layer at all, given Phase 6.** Because the layer's job here is to
+*suppress*, and a suppression mechanism that has never been shown to also permit is
+indistinguishable from a bug. Every refusal test is paired with a test that the same
+machinery fires when a skilled, agreeing, calibrated panel is supplied.
 
 ---
 

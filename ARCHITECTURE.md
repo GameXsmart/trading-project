@@ -116,7 +116,7 @@ Chosen per workload, not per fashion.
 │   ├── patterns/      # detectors, validation gate, similarity, sequences
 │   ├── news/          # RSS ingestion, dedup, classification, impact
 │   ├── models/        # predictors A-H, baselines, walk-forward evaluation
-│   ├── ensemble/      # (Phase 7) meta-model + calibration
+│   ├── ensemble/      # calibration, agreement, confidence, super-prediction gate
 │   ├── backtest/      # (Phase 8) walk-forward harness
 │   ├── evaluation/    # (Phase 9) scoring + learning loop
 │   ├── api/           # (Phase 10) FastAPI service
@@ -279,10 +279,18 @@ This is what separates the system from a dashboard of indicators:
    volatility bucket — because "this model is good" is meaningless, while "this model
    is good on BTC 4H in low-vol regimes" is actionable.
 4. Calibration: reliability curves per model per regime; isotonic recalibration
-   applied to future outputs.
-5. Weighting: the ensemble weights models by *recent, regime-matched* skill
-   (log-loss / Brier against a persistence baseline), with shrinkage toward equal
-   weights to avoid chasing noise.
+   applied to future outputs. **Built in Phase 7 — and measured to help in only 3 of
+   42 (model, regime) pairs.** Isotonic regression has enough freedom to fit noise, so
+   each curve is fitted on an earlier window and judged on a later one; the 21 that
+   made held-out calibration worse were discarded in favour of the model's own numbers.
+   Records carry the instant they were fitted through, and applying one to a prediction
+   at or before it raises rather than leaking.
+5. Weighting: the ensemble weights models by *recent, regime-matched* skill —
+   **Brier skill against climatology, not persistence**, since abstaining models beat
+   persistence. A model without significant skill receives weight zero, not a shrunk
+   weight: shrinkage toward equal weights would hand influence to models that have
+   demonstrated none. Votes are further discounted by declared input overlap, so
+   models reading the same substrate cannot corroborate each other.
 6. Retraining is **walk-forward only** — rolling-window fit, next-window predict,
    never a random split. Every fit records the exact data window used so leakage is
    auditable after the fact.
@@ -319,10 +327,14 @@ inputs is not.
 
 Phases are gated: a phase ships only when the previous one is correct and tested.
 See [`docs/PHASES.md`](docs/PHASES.md) for the gate criteria of each.
-**Phases 1 (ingestion + database), 2 (feature engine) and 3 (multi-timeframe state)
-4 (pattern and sequence discovery), 5 (news intelligence) and 6 (prediction models)
-are implemented.** Phases 7+ are designed above and not yet built.
+**Phases 1 (ingestion + database), 2 (feature engine), 3 (multi-timeframe state),
+4 (pattern and sequence discovery), 5 (news intelligence), 6 (prediction models) and
+7 (ensemble, calibration, confidence) are implemented.** Phases 8+ are designed above
+and not yet built.
 
-**Measured result so far: no model beats a climatology baseline.** The ensemble in
-Phase 7 therefore has nothing yet to weight, and building it before a model earns its
-place would be assembling a consensus of things that do not work.
+**Measured result so far: no model beats a climatology baseline**, so the Phase 7
+ensemble has nothing to weight and publishes nothing on live data. It was built anyway,
+because the layer's job is to *suppress* unjustified output, and a suppression
+mechanism never shown to also permit is indistinguishable from a bug. Every refusal is
+tested alongside a demonstration that the same machinery fires when supplied with a
+skilled, agreeing, calibrated panel.

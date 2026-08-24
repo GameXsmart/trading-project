@@ -219,6 +219,16 @@ Sliced metrics keyed `(model_id, asset, timeframe, horizon, regime, volatility_b
 window_start, window_end)`. The slicing is the point: "this model is good" is
 meaningless, "good on BTC 4H in low-vol regimes" is actionable.
 
+### `model_weights` / `calibration_maps` (Phase 7/9, not yet persisted)
+
+Phase 7's `SkillWeights` and `CalibrationLibrary` are currently derived in-process from
+a walk-forward run rather than stored. That is deliberate for now: a stored weight or
+curve is only valid for the data window it was fitted on, and persisting one without
+also persisting and enforcing that window is how a stale calibration silently outlives
+the regime it was measured in. `CalibrationRecord.fitted_through` is the field these
+tables will key on. Until then the derivation is repeated on demand, which is slower
+and cannot go stale.
+
 ### `model_weights` / `calibration_maps` (Phase 7/9)
 Current ensemble weights and isotonic calibration curves per model per regime, with
 the evaluation window that produced them — so any published number can be traced back

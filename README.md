@@ -7,11 +7,13 @@ produces **probabilistic, uncertainty-bearing** assessments of market state.
 > keys, and never will. It produces scenarios and probabilities for a human to
 > interpret — never guarantees, and never investment advice.
 
-**Status: Phases 1 (ingestion + database), 2 (feature engine) and 3 (multi-timeframe
-market state), 4 (pattern and sequence discovery), 5 (news intelligence) and 6
-(prediction models) are complete and tested.**
+**Status: Phases 1 (ingestion + database), 2 (feature engine), 3 (multi-timeframe
+market state), 4 (pattern and sequence discovery), 5 (news intelligence), 6
+(prediction models) and 7 (ensemble, calibration, confidence) are complete and
+tested.**
 
-**The headline result: none of the eight models beats a climatology baseline.** See
+**The headline result: none of the eight models beats a climatology baseline, so the
+ensemble publishes nothing.** See
 [What the measurements say](#what-the-measurements-say). The full architecture is designed in [`ARCHITECTURE.md`](ARCHITECTURE.md);
 the remaining phases are specified in [`docs/PHASES.md`](docs/PHASES.md) and not yet
 built. Nothing in this repo pretends to be further along than it is.
@@ -106,6 +108,42 @@ analogues rose 36% against a 52% baseline*, SOL *matches baseline exactly*.
 
 ---
 
+## What Phase 7 delivers — the layer that refuses to publish
+
+The ensemble weights models by measured out-of-sample skill against climatology, per
+regime, significant after correction across every slice tested. A model that has not
+demonstrated skill receives weight **zero** — not a floor, not a shrunk weight, because
+shrinkage toward equal weights hands influence to models that have earned none.
+
+Swept across BTC, ETH and SOL on 1h — **2,097 non-overlapping evaluation points, 0
+published predictions, 0 super predictions.** Six of the gate's nine conditions fail at
+every single point. One of them is worth separating out: the eight models never reach
+six votes in one direction *anywhere* in those 2,097 points, mostly because half of
+them abstain. That failure is independent of skill — even if a model were later shown
+to have some, this panel would still not produce a super prediction.
+
+| Capability | Detail |
+|---|---|
+| **Isotonic calibration** | Per model per regime, fitted on an earlier window and judged on a later one. Curves that do not improve held-out calibration are discarded and the model's own numbers kept. |
+| **Look-ahead defence** | Every record carries the instant it was fitted through; applying it to a prediction at or before that instant raises. It caught a real leak in a sweep script on its first run. |
+| **Independence-discounted agreement** | Votes weighted by declared input overlap, so six models reading one substrate count as roughly one opinion. |
+| **Confidence as six named factors** | Skill, calibration, agreement, data quality, sample size, regime familiarity — multiplied, capped at 0.85, and decomposable so the UI can say *which* factor limited a number. |
+| **Nine-condition gate** | Conjunctive, each reporting pass/fail with its numbers. A gate that only returns a boolean cannot be told from a broken one. |
+
+**Calibration overfits at these sample sizes, and the code caught it.** Of 42 (model,
+regime) pairs on BTC 1h: 3 curves kept, 21 fitted but *worse* out-of-sample and
+discarded, 18 with too little data to fit at all. Climatology itself got worse under
+calibration in all four of its regimes. That is isotonic regression doing what it does
+with ~100 holdout points, and the held-out judgement is what stops it reaching
+production.
+
+**What reliability actually shows.** Across 12,258 (probability, outcome) pairs, the
+models are compressed toward the base rate: a stated range of 0.30 moves the observed
+frequency only about +0.065, and no populated bin's stated probability lies inside its
+own observed interval.
+
+---
+
 ## Quick start
 
 Requires Python 3.12+. No database server, no Docker, nothing else.
@@ -174,6 +212,8 @@ metrics, and quality scoring — until you stop it with Ctrl-C.
 | `mie news --asset BTC` | Deduplicated, classified news feed. |
 | `mie news-impact BTC` | Measured impact of news on realised volatility. |
 | `mie evaluate BTC` | Walk-forward model skill against a baseline. |
+| `mie calibrate BTC` | Fit per-model calibration and report whether it helped. |
+| `mie ensemble BTC` | The ensemble, its confidence decomposition, and the gate. |
 
 ---
 
@@ -234,10 +274,18 @@ rather than buried.
 | Does the current state have historical analogues? | **Sometimes.** BTC: insufficient evidence (16 comparable moments in 8,548). ETH: 200 analogues rose 36% against a 52% baseline. SOL: matches baseline. |
 | Does news move prices? | **Unknown.** RSS carries a week of history; after thinning, 6 events in the largest category against a 25-event minimum. Reports insufficient evidence and accumulates. |
 | **Do any of the eight models beat a baseline?** | **No.** 0 of 8 against climatology across 160 slices on three assets. All 8 "beat" persistence — but so do the models that abstain entirely, which is why persistence is not the standard. |
+| Does calibrating the models help? | **Almost never.** 3 of 42 (model, regime) curves improved held-out calibration; 21 made it worse and were discarded. Climatology got worse in all four of its regimes. |
+| **Does the ensemble publish anything?** | **No.** 0 published and 0 super predictions across 2,097 evaluation points on three assets. Six of the gate's nine conditions fail at every point. |
 
 What *does* survive measurement is volatility clustering: volume spikes and range
 compression genuinely precede larger-than-usual movement. They say nothing about
 direction, and the system does not pretend otherwise.
+
+Every one of these negative results is produced by machinery that has been shown to
+report a positive one when a positive one exists — an oracle model is certified by the
+evaluator, a miscalibrated forecaster is corrected by the calibrator, a skilled and
+agreeing panel clears the gate. Without that, "we found nothing" would be
+indistinguishable from "our detector is broken".
 
 ## Configuration
 
