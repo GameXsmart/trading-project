@@ -113,7 +113,7 @@ Chosen per workload, not per fashion.
 │   ├── quality/       # validators, anomaly detection, scoring
 │   ├── features/      # incremental indicator engine + market structure
 │   ├── state/         # multi-timeframe market state + regime
-│   ├── patterns/      # detectors + statistical validation gate
+│   ├── patterns/      # detectors, validation gate, similarity, sequences
 │   ├── news/          # (Phase 5) news ingestion + impact model
 │   ├── models/        # (Phase 6) predictors A-H
 │   ├── ensemble/      # (Phase 7) meta-model + calibration
@@ -319,6 +319,5 @@ inputs is not.
 Phases are gated: a phase ships only when the previous one is correct and tested.
 See [`docs/PHASES.md`](docs/PHASES.md) for the gate criteria of each.
 **Phases 1 (ingestion + database), 2 (feature engine) and 3 (multi-timeframe state)
-are implemented, and Phase 4 (pattern validation) is partially implemented** —
-detectors and the statistical gate are built; similarity search and sequence mining
-are not. Phases 5+ are designed above and not yet built.
+and 4 (pattern and sequence discovery) are implemented.** Phases 5+ are designed
+above and not yet built.

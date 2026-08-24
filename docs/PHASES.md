@@ -108,7 +108,7 @@ phase begins.
 
 ---
 
-## Phase 4 — Pattern discovery and validation 🟡 PARTIAL
+## Phase 4 — Pattern and sequence discovery ✅ COMPLETE
 
 **Delivered**
 
@@ -123,8 +123,11 @@ phase begins.
   evidence for that exact asset, timeframe and horizon.
 - `pattern_stats` table and CLI: `mie patterns measure`, `mie patterns show`.
 
-**Still to build:** historical similarity search and statistical sequence mining
-(the "what usually happens before and after this" chains of requirement §6).
+- `SimilarityEngine`: historical analogue search on scale-free features, with a
+  self-calibrating distance ceiling, past-only normalisation and a forward embargo.
+- `SequenceMiner`: enumerates pattern chains of length 2–3 and tests every one; plus a
+  state-transition matrix with Wilson intervals.
+- CLI: `mie similar BTC`.
 
 **Gate: met for the detectors built.**
 
@@ -164,13 +167,33 @@ and the system does not pretend otherwise.
 - Pattern direction is declared in advance. Deciding it after seeing the outcome is
   relabelling, not analysis.
 
-**A bug this phase surfaced.** The first `fakeout` implementation required only
+**Sequence mining found nothing.** 84 chains occurred often enough on BTC 1h to be
+tested; **none survived correction**. The strongest candidates
+(`structure_break_down -> compression`, p=0.0082; `volume_anomaly -> fakeout_down`,
+p=0.0083) do not clear Benjamini-Hochberg across 84 tests. Reported as a negative
+result rather than quietly dropped.
+
+**Similarity search gives three different honest answers.** On the same timestamp:
+BTC returns *insufficient evidence* (only 16 comparable situations in 8,548 — the
+current state genuinely has few precedents); ETH finds 200 analogues that rose 36% of
+the time against a 52% baseline, an interval clear of it; SOL finds 200 analogues that
+match the baseline exactly. "I don't know", "history leans down", and "history says
+nothing" are all valid outputs, and the engine produces each where it belongs.
+
+**Two bugs this phase surfaced.** The first `fakeout` implementation required only
 `high > prior_high and close < prior_high`, which fired on **37% of all bars** — a
 "pattern" present in a third of history describes the market rather than signalling
 anything in it. It initially produced the sweep's one apparently-significant
 directional finding (ETH `fakeout_down`, p=0.0031). Requiring the breach and the
 rejection to be *material* dropped its firing rate to ~1%, and the finding vanished.
 A frequency check now guards against the same class of error.
+
+The similarity ceiling was also miscalibrated. Set at a fixed 1.0, it returned a
+single analogue from 8,548 candidates — because for k standardised dimensions the
+expected distance between two *unrelated* samples is √2 ≈ 1.414 (measured: 1.426),
+so a ceiling below that rejects almost everything by construction. It is now derived
+from the data's own dispersion, which also makes it self-calibrating across assets
+instead of a number tuned to BTC.
 
 ---
 

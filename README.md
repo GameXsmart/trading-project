@@ -8,9 +8,7 @@ produces **probabilistic, uncertainty-bearing** assessments of market state.
 > interpret — never guarantees, and never investment advice.
 
 **Status: Phases 1 (ingestion + database), 2 (feature engine) and 3 (multi-timeframe
-market state) are complete and tested; Phase 4 (pattern validation) is partially
-complete** — detectors and the statistical gate are built, similarity search and
-sequence mining are not. The full architecture is designed in [`ARCHITECTURE.md`](ARCHITECTURE.md);
+market state) and 4 (pattern and sequence discovery) are complete and tested.** The full architecture is designed in [`ARCHITECTURE.md`](ARCHITECTURE.md);
 the remaining phases are specified in [`docs/PHASES.md`](docs/PHASES.md) and not yet
 built. Nothing in this repo pretends to be further along than it is.
 
@@ -94,6 +92,14 @@ direction, and the system does not pretend otherwise.
 
 That result is the point of the phase, not a disappointment in it.
 
+**Sequence mining agrees.** 84 pattern chains occurred often enough on BTC 1h to be
+tested; none survived correction.
+
+**Historical similarity search** answers "when has it looked like this before?" — and
+is willing to answer "it hasn't". On one timestamp it gave three different honest
+answers: BTC *insufficient evidence* (16 comparable situations in 8,548), ETH *200
+analogues rose 36% against a 52% baseline*, SOL *matches baseline exactly*.
+
 ---
 
 ## Quick start
@@ -160,6 +166,7 @@ metrics, and quality scoring — until you stop it with Ctrl-C.
 | `mie state BTC` | Hierarchical multi-timeframe market state. |
 | `mie patterns measure` | Measure every detector against history. |
 | `mie patterns show` | Which patterns earned predictive use. |
+| `mie similar BTC` | Historical analogues of the current state. |
 
 ---
 
@@ -169,7 +176,8 @@ metrics, and quality scoring — until you stop it with Ctrl-C.
 providers/ → quality/ → storage/ → core/events → features/ → state/ → patterns/
  failover    validate    Timescale   candle.closed  indicators  hierarchy  detectors
  throttle    score       SQLite                     structure   regime     statistics
- breakers                                                       alignment  evidence gate
+ breakers                                                       alignment  similarity
+                                                                           sequences
 ```
 
 Four ideas carry most of the weight:
@@ -242,7 +250,7 @@ gracefully on a plain PostgreSQL without the extension.
 pytest
 ```
 
-319 tests, no network and no infrastructure required — ingestion, validation and
+335 tests, no network and no infrastructure required — ingestion, validation and
 failover run against a deterministic synthetic provider with injectable faults
 (gaps, duplicates, malformed bars, price spikes, outages), and every indicator is
 checked against an independently written reference implementation.
@@ -261,8 +269,7 @@ pytest -m network
 
 Phases 5–12 — news intelligence, the model ensemble, backtesting, the learning loop,
 the dashboard, and alerts — are **designed** in [`ARCHITECTURE.md`](ARCHITECTURE.md)
-and **not implemented**. Within Phase 4, historical similarity search and sequence
-mining remain to be built. Their directories do not exist rather than containing stubs: an empty
+and **not implemented**. Their directories do not exist rather than containing stubs: an empty
 module pretending to be a model is worse than no module.
 
 The prediction contract, the multi-timeframe agreement model, and the learning loop

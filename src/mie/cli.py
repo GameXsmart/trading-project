@@ -18,6 +18,7 @@ and nothing here contains logic of its own.
     mie state BTC                     multi-timeframe market state
     mie patterns measure              measure every detector against history
     mie patterns show                 which patterns earned predictive use
+    mie similar BTC                   historical analogues of the current state
 """
 
 from __future__ import annotations
@@ -39,6 +40,7 @@ from mie.features.engine import _row_to_candle
 from mie.ingestion.service import IngestionService
 from mie.patterns.evaluation import PatternEvaluator
 from mie.patterns.registry import PatternRegistry
+from mie.patterns.similarity import SimilarityEngine
 from mie.state.engine import StateEngine
 from mie.storage.repositories import (
     FeatureRepository,
@@ -840,6 +842,79 @@ def patterns_show(
         console.print(
             "[dim]Only patterns marked informative may influence a prediction. "
             "Everything else is descriptive only.[/dim]"
+        )
+
+    asyncio.run(_run())
+
+
+@app.command("similar")
+def similar(
+    asset: str = typer.Argument(..., help="Canonical symbol, e.g. BTC."),
+    timeframe: str = typer.Option("1h", "--timeframe"),
+    horizons: str = typer.Option("12,48", "--horizons", help="Comma-separated, in bars."),
+    source: str = typer.Option("binance", "--source"),
+) -> None:
+    """Find historical analogues of the current market state and report what followed.
+
+    Answers "it has not looked like this before" when that is the truth, rather than
+    returning the nearest available strangers.
+    """
+
+    async def _run() -> None:
+        settings = _settings()
+        frame = _tf(timeframe)
+        wanted = [int(h.strip()) for h in horizons.split(",")]
+
+        async with IngestionService(settings) as service, service.db.session() as session:
+            rows = await FeatureRepository(session).fetch(asset, frame, source=source)
+        if len(rows) < 300:
+            console.print(
+                f"[yellow]not enough feature history[/yellow] for {asset.upper()} {frame} "
+                f"- run `mie features compute {asset.upper()} {frame}` first"
+            )
+            return
+
+        history = [(r.open_time, r.payload) for r in rows]
+        closes = [r.payload.get("close", 0.0) for r in rows]
+        engine = SimilarityEngine()
+
+        console.print(
+            f"\n[bold]{asset.upper()} {frame}[/bold]  as of "
+            f"{rows[-1].open_time:%Y-%m-%d %H:%M} UTC  ({len(history)} historical states)\n"
+        )
+        for horizon in wanted:
+            result = engine.search(
+                history, closes, len(history) - 1, horizon, asset, frame
+            )
+            if not result.has_evidence:
+                console.print(
+                    f"  [yellow]+{horizon} bars: insufficient evidence[/yellow] - only "
+                    f"{len(result.analogues)} comparable situations in "
+                    f"{result.searched} searched (ceiling {result.distance_ceiling:.2f})"
+                )
+                continue
+            estimate = result.estimate
+            assert estimate is not None
+            verdict = (
+                "[green]differs from baseline[/green]"
+                if result.is_informative
+                else "[dim]matches baseline[/dim]"
+            )
+            console.print(
+                f"  [bold]+{horizon} bars[/bold]: {len(result.analogues)} analogues rose "
+                f"{estimate.rate:.0%} [{estimate.low:.0%}-{estimate.high:.0%}] "
+                f"vs baseline {estimate.baseline:.0%} - {verdict}"
+            )
+            console.print(
+                f"      median {result.median_return_pct:+.2f}%  "
+                f"mean {result.mean_return_pct:+.2f}%  "
+                f"worst analogue drawdown {result.worst_case_pct:+.1f}%"
+            )
+
+        console.print(
+            "\n[dim]Analogues are historical situations that resembled this one on "
+            "scale-free features. Resemblance is not causation, and a distribution "
+            "of past outcomes is not a forecast. Not investment advice.[/dim]"
         )
 
     asyncio.run(_run())
