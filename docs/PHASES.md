@@ -583,26 +583,113 @@ here so the first delisting is handled correctly rather than discovered afterwar
 
 ---
 
-## Phase 9 — Self-evaluation and learning
+## Phase 9 — Self-evaluation and learning ✅ COMPLETE (result: calibration moved, weights did not)
 
-**Build**: the outcome scorer, sliced performance metrics, calibration updates, and
-dynamic model reweighting.
+**Delivered**
 
-**Design constraints**
+- **Append-only, hash-stamped prediction storage** (`learning/records.py`,
+  `storage/models.py`). Prediction ids are *derived* from model, asset, timeframe,
+  horizon and instant, and the insert uses `ON CONFLICT DO NOTHING` — so re-running a
+  prediction point collides and is dropped. A re-run can neither duplicate the sample
+  nor revise what was said. Verified against the live database: running `mie predict`
+  twice over the same 300 points left the count at 8,100.
+- **A content hash over the claim, verified on read.** Model, asset, horizon,
+  distribution, confidence and the threshold the outcome will be scored against. Not
+  `created_at`, not the evidence blob — a check that fires for reasons unrelated to
+  integrity is a check that gets switched off. A record failing verification is
+  *refused*, not repaired: whatever it now says is not what the model said.
+- **An outcome resolver reading final candles only** (`learning/loop.py`), scoring
+  against the threshold *stored with the prediction* rather than one recomputed at
+  resolution time — which would score the forecast against a different question from
+  the one it answered.
+- **Metrics sliced five ways** (`learning/metrics.py`): asset, timeframe, horizon,
+  regime and volatility bucket, the last recorded at prediction time rather than
+  reconstructed. Slices below 30 outcomes report *insufficient evidence* instead of a
+  number.
+- **Regime-matched reweighting with two-stage shrinkage** (`learning/weights.py`):
+  recency-limited windows so degradation is visible, sample-size shrinkage so a slice
+  that just cleared the gate cannot dominate one with ten times the evidence, and
+  blending toward equal weights *among models that qualified*.
+- CLI: `mie predict`, `mie learn`.
 
-- Predictions are written **before** the outcome exists, append-only and hash-stamped.
-- Outcomes resolve from final candles only.
-- Metrics are sliced by asset, timeframe, horizon, regime, and volatility bucket —
-  "this model is good" is meaningless; "good on BTC 4H in low-vol" is actionable.
-- Reweighting uses recent, regime-matched skill with shrinkage toward equal weights,
-  so the ensemble does not chase noise.
-- **No fake learning.** Storing predictions is not learning. The loop must
-  demonstrably change future behaviour.
+**Gate: both criteria met.**
 
-**Gate**
-- An injected model whose skill degrades in a specific regime is demonstrably
-  down-weighted in that regime and only that regime.
-- Calibration measurably improves after recalibration on held-out data.
+| Criterion | Result |
+|---|---|
+| A model degrading in one regime is down-weighted in that regime and only that regime | **Met.** An injected model that keeps working in `trend` and stops working in `chop` loses its `chop` weight entirely while its `trend` weight is unchanged to within 0.02. A neighbouring model's collapse leaves other models untouched. |
+| Calibration measurably improves after recalibration on held-out data | **Met.** A systematically overconfident model is corrected, with held-out ECE improving. On live data 6 of 42 fitted curves were adopted, each improving held-out ECE by between +0.008 and +0.036. |
+
+**A deliberate deviation, stated rather than hidden.** The specification asks for
+shrinkage toward *equal* weights. Applied literally that hands influence to models that
+have demonstrated none — with eight models and no skill anywhere, equal weights means
+every model receives an eighth of a vote it has not earned. So shrinkage happens in two
+stages: a model must first clear the evidence gate to receive any weight at all, and
+only among those that clear it are relative weights blended toward equal. Below the
+gate the weight is zero, not small.
+
+**Measured on live data: 8,100 predictions across BTC/ETH/SOL, nine forecasters,
+all resolved.**
+
+| | Result |
+|---|---|
+| Weight slices evaluated | 160 |
+| **Slices granted a non-zero weight** | **0** |
+| — rejected: skill at or below the usable floor | 81 |
+| — rejected: too few resolved outcomes | 64 |
+| — rejected: positive skill, not significant | 15 |
+| Calibration curves fitted | 42 (24 with enough data to fit at all) |
+| **Calibration curves adopted** | **6** |
+
+**The loop's own verdict: "learned: 0 weight changes, 6 calibration curves adopted."**
+That is a real change — the system will calibrate six (model, regime) pairs differently
+tomorrow than it did today — and it is not the change anyone was hoping for. Nothing
+learned to *trust a model more*. What it learned is that six models are systematically
+miscalibrated in specific regimes, and how to correct them.
+
+Five of the six adopted curves are in `downtrend_low_vol`, and one of those six is
+**climatology's own**. The base rates themselves shift in downtrends enough that the
+unconditional forecaster is measurably miscalibrated there.
+
+**The clearest result in the project.** Ranking all nine forecasters by Brier over 900
+outcomes each:
+
+| Forecaster | Brier | Accuracy |
+|---|---|---|
+| `sentiment` | **0.6667** | 36.7% |
+| `orderflow` | **0.6667** | 36.7% |
+| `sequence` | **0.6667** | 36.7% |
+| `baseline_climatology` | 0.6668 | 33.7% |
+| `similarity` | 0.6692 | 36.6% |
+| `regime` | 0.6758 | 32.7% |
+| `technical` | 0.6772 | 33.2% |
+| `crossasset` | 0.6780 | 38.3% |
+| `timeseries` | 0.6861 | 32.7% |
+
+0.6667 is exactly 2/3 — the Brier score of a uniform distribution. The three models at
+the top of that table **abstain on every point**. The order is: saying nothing beats
+climatology, and climatology beats every opinion any model formed.
+
+**Where the apparent skill lives, again.** 29 of the 160 slices posted skill above
++0.05. Their sample sizes were 2, 4, 7, 10, 19, 61 and 98 — the largest apparent edge
+in the entire run, +0.2558, rests on **two observations**. The gate rejects all of
+them, which is the gate working.
+
+**A silent failure caught by running the loop twice.** The first pass resolved the
+entire backlog. The second had no unresolved records left to load, so recalibration had
+nothing to pair outcomes against and quietly stopped happening — reporting "learned
+nothing" rather than "I could not check". The repository now exposes every stored
+record rather than only the pending ones, with a regression test. A loop whose second
+run behaves differently from its first is the kind of bug that only appears in
+production.
+
+**A resolution bug caught by a test.** `_bar_covering` originally returned "the last
+final bar at or before the resolution instant". That sounds correct and is not: when
+the resolving bar is missing — a gap, or a bar still forming — it silently reached back
+to whatever *was* available and scored the forecast against a price from an arbitrary
+distance in the past. In the test that caught it, a prediction resolving at bar 212 was
+scored against bar 149. The outcome looked resolved and was fiction. Resolution now
+refuses anything outside one bar of the resolution instant and leaves the prediction
+pending.
 
 ---
 

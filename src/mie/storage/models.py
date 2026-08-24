@@ -486,3 +486,140 @@ class NewsEventRow(Base):
 
     def __repr__(self) -> str:  # pragma: no cover
         return f"<NewsEventRow {self.cluster_id} {self.published_at} {self.category}>"
+
+
+class PredictionRow(Base):
+    """One prediction, written before its outcome exists. **Append-only.**
+
+    The append-only rule is what makes Phase 9 an evaluation rather than a story. A
+    prediction that can be edited after the fact is not a forecast; it is a description
+    of what happened, and any accuracy computed from it is circular. There is no update
+    path in :class:`~mie.storage.repositories.PredictionRepository` — writes that
+    collide on ``prediction_id`` are dropped, not merged.
+
+    ``content_hash`` covers the fields that constitute the claim: model, asset,
+    horizon, the distribution, confidence, and the threshold the outcome will be scored
+    against. It is verified on read. Silent corruption of a stored prediction would be
+    indistinguishable from the model having been better than it was, and nothing else
+    in the pipeline would notice.
+    """
+
+    __tablename__ = "predictions"
+    __table_args__ = (
+        Index("ix_predictions_scope", "asset", "timeframe", "horizon_bars", "as_of"),
+        Index("ix_predictions_model_time", "model_id", "as_of"),
+        Index("ix_predictions_resolve", "resolves_at", "resolved"),
+    )
+
+    prediction_id: Mapped[str] = mapped_column(String(40), primary_key=True)
+    content_hash: Mapped[str] = mapped_column(String(64))
+
+    model_id: Mapped[str] = mapped_column(String(48))
+    model_version: Mapped[str] = mapped_column(String(16), default="1")
+    asset: Mapped[str] = mapped_column(String(24))
+    timeframe: Mapped[str] = mapped_column(String(8))
+    horizon_bars: Mapped[int] = mapped_column(Integer)
+    #: The instant the prediction was made. Only data closing at or before this may
+    #: have informed it.
+    as_of: Mapped[datetime] = _ts_column(index=True)
+    #: When the outcome becomes knowable.
+    resolves_at: Mapped[datetime] = _ts_column()
+
+    prob_up: Mapped[float] = mapped_column(Float)
+    prob_flat: Mapped[float] = mapped_column(Float)
+    prob_down: Mapped[float] = mapped_column(Float)
+    confidence: Mapped[float] = mapped_column(Float, default=0.0)
+    move_threshold_pct: Mapped[float] = mapped_column(Float, default=0.0)
+    reference_price: Mapped[float] = mapped_column(Float, default=0.0)
+    regime: Mapped[str] = mapped_column(String(24), default="unknown")
+    #: Volatility bucket at prediction time, for slicing. Recorded *now* because it
+    #: cannot be reconstructed later without re-deriving history.
+    volatility_bucket: Mapped[str] = mapped_column(String(16), default="unknown")
+    data_quality: Mapped[float] = mapped_column(Float, default=1.0)
+    is_actionable: Mapped[bool] = mapped_column(Boolean, default=False)
+    evidence: Mapped[dict[str, Any]] = mapped_column(JSON, default=dict)
+
+    resolved: Mapped[bool] = mapped_column(Boolean, default=False, index=True)
+    created_at: Mapped[datetime] = _ts_column(default=utcnow)
+
+    def __repr__(self) -> str:  # pragma: no cover
+        return f"<PredictionRow {self.model_id} {self.asset} {self.as_of}>"
+
+
+class PredictionOutcomeRow(Base):
+    """What actually happened, resolved from final candles only.
+
+    Separate from the prediction rather than columns on it, so that resolving an
+    outcome never touches the prediction's own row and the append-only guarantee stays
+    trivially true. The prediction's ``resolved`` flag is the single exception, and it
+    carries no information about the outcome itself.
+    """
+
+    __tablename__ = "prediction_outcomes"
+    __table_args__ = (
+        Index("ix_outcomes_model", "model_id", "resolved_at"),
+        Index("ix_outcomes_scope", "asset", "regime", "resolved_at"),
+    )
+
+    prediction_id: Mapped[str] = mapped_column(
+        ForeignKey("predictions.prediction_id", ondelete="CASCADE"), primary_key=True
+    )
+    #: Duplicated from the prediction so metrics can slice without a join.
+    model_id: Mapped[str] = mapped_column(String(48), index=True)
+    asset: Mapped[str] = mapped_column(String(24))
+    timeframe: Mapped[str] = mapped_column(String(8))
+    horizon_bars: Mapped[int] = mapped_column(Integer)
+    regime: Mapped[str] = mapped_column(String(24), default="unknown")
+    volatility_bucket: Mapped[str] = mapped_column(String(16), default="unknown")
+
+    resolved_at: Mapped[datetime] = _ts_column(index=True)
+    realised_direction: Mapped[str] = mapped_column(String(8))
+    realised_move_pct: Mapped[float] = mapped_column(Float)
+    exit_price: Mapped[float] = mapped_column(Float, default=0.0)
+    brier: Mapped[float] = mapped_column(Float)
+    log_loss: Mapped[float] = mapped_column(Float)
+    correct: Mapped[bool] = mapped_column(Boolean, default=False)
+    #: Probability the model assigned to what actually happened.
+    probability_of_truth: Mapped[float] = mapped_column(Float, default=0.0)
+    scored_at: Mapped[datetime] = _ts_column(default=utcnow)
+
+    def __repr__(self) -> str:  # pragma: no cover
+        return f"<PredictionOutcomeRow {self.prediction_id} {self.realised_direction}>"
+
+
+class ModelWeightRow(Base):
+    """A model's current weight in one regime, and what justified it.
+
+    Persisted so that "the loop changed something" is a checkable claim rather than an
+    assertion. Every row records the sample it was computed from, the raw skill before
+    shrinkage, and the weight actually applied — so a reader can tell a weight that
+    moved because evidence accumulated from one that moved because the code changed.
+    """
+
+    __tablename__ = "model_weights"
+    __table_args__ = (
+        UniqueConstraint("model_id", "asset", "timeframe", "horizon_bars", "regime",
+                         name="uq_model_weight_scope"),
+        Index("ix_weights_updated", "updated_at"),
+    )
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    model_id: Mapped[str] = mapped_column(String(48))
+    asset: Mapped[str] = mapped_column(String(24))
+    timeframe: Mapped[str] = mapped_column(String(8))
+    horizon_bars: Mapped[int] = mapped_column(Integer)
+    regime: Mapped[str] = mapped_column(String(24), default="all")
+
+    #: Measured Brier skill against the baseline over the evaluation sample.
+    raw_skill: Mapped[float] = mapped_column(Float, default=0.0)
+    #: Weight after shrinkage toward the prior. What the ensemble actually uses.
+    weight: Mapped[float] = mapped_column(Float, default=0.0)
+    #: The previous weight, so a change is readable without a history table.
+    previous_weight: Mapped[float] = mapped_column(Float, default=0.0)
+    samples: Mapped[int] = mapped_column(Integer, default=0)
+    p_value: Mapped[float] = mapped_column(Float, default=1.0)
+    significant: Mapped[bool] = mapped_column(Boolean, default=False)
+    updated_at: Mapped[datetime] = _ts_column(default=utcnow)
+
+    def __repr__(self) -> str:  # pragma: no cover
+        return f"<ModelWeightRow {self.model_id} {self.asset} {self.regime} {self.weight}>"

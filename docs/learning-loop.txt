@@ -1,0 +1,40 @@
+Learning loop - raw output
+==========================
+
+8,100 predictions recorded across BTC/ETH/SOL on 1h with a 12-bar horizon, from eight
+models plus the climatology baseline, then all resolved from final candles.
+
+"weight slices evaluated" counts (model, asset, timeframe, horizon, regime) scopes. A
+slice earns a weight only with enough resolved outcomes, skill above the usable floor,
+and significance surviving Benjamini-Hochberg across every slice tested.
+
+0.6667 is exactly 2/3 - the Brier score of a uniform distribution. The three models at
+the top of the ranking abstain on every point.
+
+Committed as evidence. See docs/PHASES.md, Phase 9, for the analysis.
+
+stored: {'predictions': 8100, 'resolved': 8100, 'pending': 0, 'outcomes': 8100}
+persisted weight rows: 160  non-zero: 0
+
+weight slices evaluated: 160
+    81  skill at or below the usable floor
+    64  too few resolved outcomes
+    15  skill positive but not significant
+
+slices with skill > 0.05: 29; their sample sizes: [2, 4, 7, 10, 19, 61, 98]
+
+calibration: 42 fitted, 6 adopted
+  of which had enough data to fit at all: 24
+
+overall Brier by model (lower is better; 0.6667 = uniform):
+  sentiment              n=900   brier=0.6667 acc=36.7%
+  orderflow              n=900   brier=0.6667 acc=36.7%
+  sequence               n=900   brier=0.6667 acc=36.7%
+  baseline_climatology   n=900   brier=0.6668 acc=33.7%
+  similarity             n=900   brier=0.6692 acc=36.6%
+  regime                 n=900   brier=0.6758 acc=32.7%
+  technical              n=900   brier=0.6772 acc=33.2%
+  crossasset             n=900   brier=0.6780 acc=38.3%
+  timeseries             n=900   brier=0.6861 acc=32.7%
+
+VERDICT: learned: 0 weight changes, 6 calibration curves adopted, from 8100 resolved outcomes

@@ -25,6 +25,8 @@ and nothing here contains logic of its own.
     mie calibrate BTC                 fit and judge per-model calibration
     mie ensemble BTC                  the ensemble, its confidence and the gate
     mie backtest BTC                  walk-forward folds with a leakage probe
+    mie predict BTC                   record predictions for later scoring
+    mie learn                         resolve, measure, reweight - and say what changed
 """
 
 from __future__ import annotations
@@ -33,6 +35,7 @@ import asyncio
 import contextlib
 import signal
 from datetime import timedelta
+from statistics import median
 
 import typer
 from rich.console import Console
@@ -50,11 +53,14 @@ from mie.ensemble.gate import SuperPredictionGate
 from mie.ensemble.meta import EnsembleModel, SkillWeights
 from mie.features.engine import _row_to_candle
 from mie.ingestion.service import IngestionService
+from mie.learning.loop import LearningLoop
+from mie.learning.records import PredictionRecord, ResolvedOutcome, volatility_bucket
+from mie.learning.weights import WeightKey
 from mie.models.baselines import ClimatologyBaseline, PersistenceBaseline
 from mie.models.evaluation import WalkForwardEvaluator, summarise_thresholds
 from mie.models.predictors import ALL_MODELS
 from mie.models.runner import ContextSource, build_contexts
-from mie.models.types import Horizon, Outcome
+from mie.models.types import Distribution, Horizon, Outcome
 from mie.news.engine import NewsEngine
 from mie.news.impact import ImpactValidator
 from mie.patterns.evaluation import PatternEvaluator
@@ -67,6 +73,7 @@ from mie.storage.repositories import (
     NewsEventRepository,
     OHLCVRepository,
     PatternStatsRepository,
+    PredictionRepository,
     QualityRepository,
 )
 
@@ -1508,6 +1515,219 @@ def backtest(
         )
 
     asyncio.run(_run())
+
+
+@app.command("predict")
+def predict(
+    asset: str = typer.Argument(..., help="Canonical symbol, e.g. BTC."),
+    timeframe: str = typer.Option("1h", "--timeframe"),
+    horizon: int = typer.Option(12, "--horizon", help="Forecast horizon, in bars."),
+    source: str = typer.Option("binance", "--source"),
+    points: int = typer.Option(1, "--points", help="How many recent points to record."),
+) -> None:
+    """Record predictions for later scoring. Written before the outcome exists.
+
+    Storage is append-only and hash-stamped: re-running the same point collides on its
+    derived id and is dropped, so a re-run can neither duplicate the sample nor revise
+    what was said.
+    """
+
+    async def _run() -> None:
+        settings = _settings()
+        frame = _tf(timeframe)
+        contexts = await _evaluation_contexts(settings, asset, frame, horizon, source)
+        if contexts is None:
+            return
+
+        models = [*[m() for m in ALL_MODELS], ClimatologyBaseline()]
+        records = []
+        for context, _ in contexts[-max(1, points) :]:
+            returns = [abs(r) for r in context.returns(100)]
+            bucket = volatility_bucket(median(returns) if returns else 0.0)
+            for model in models:
+                try:
+                    records.append(
+                        PredictionRecord.of(model.predict(context), volatility=bucket)
+                    )
+                except Exception as exc:  # pragma: no cover - defensive
+                    log.warning("predict_failed", model=model.model_id, error=str(exc)[:200])
+
+        async with IngestionService(settings) as service, service.db.session() as session:
+            repo = PredictionRepository(session)
+            offered = await repo.append(records)
+            await session.commit()
+            counts = await repo.counts()
+
+        console.print(
+            f"\n[bold]{asset.upper()} {frame} +{horizon}[/bold]: offered {offered} "
+            f"predictions from {len(models)} models"
+        )
+        console.print(
+            f"stored: [bold]{counts['predictions']}[/bold] predictions, "
+            f"{counts['resolved']} resolved, {counts['pending']} pending"
+        )
+        console.print(
+            "[dim]Append-only: duplicates of an existing prediction point are dropped "
+            "rather than merged, so a re-run cannot inflate the sample.[/dim]"
+        )
+
+    asyncio.run(_run())
+
+
+@app.command("learn")
+def learn(
+    timeframe: str = typer.Option("1h", "--timeframe"),
+    source: str = typer.Option("binance", "--source"),
+    show_slices: bool = typer.Option(False, "--slices", help="Show sliced metrics."),
+) -> None:
+    """Resolve due predictions, measure, reweight — and report whether anything changed.
+
+    Storing predictions is not learning. This command reports which of three states it
+    is in: nothing to learn from yet, learned nothing, or learned something — and in
+    the last case, exactly which weight or calibration curve moved and on what sample.
+    """
+
+    async def _run() -> None:
+        settings = _settings()
+        frame = _tf(timeframe)
+
+        async with IngestionService(settings) as service, service.db.session() as session:
+            repo = PredictionRepository(session)
+            # Every record, not only the unresolved ones: the resolver wants the
+            # pending rows, but recalibration needs the resolved ones to pair what a
+            # model said with what happened.
+            rows = await repo.records()
+            stored_outcomes = await repo.outcomes()
+            weight_rows = await repo.weights()
+            assets = {r.asset for r in rows}
+            candles_by_asset = {}
+            for asset in assets:
+                bars = await OHLCVRepository(session).fetch(asset, frame, source=source)
+                candles_by_asset[asset] = [
+                    _row_to_candle(b, asset, frame, source) for b in bars
+                ]
+
+        records = [_row_to_record(r) for r in rows]
+        outcomes = [_row_to_outcome(r) for r in stored_outcomes]
+        previous = {
+            WeightKey(w.model_id, w.asset, w.timeframe, w.horizon_bars, w.regime): w.weight
+            for w in weight_rows
+        }
+
+        loop = LearningLoop()
+        report = loop.run(records, candles_by_asset, existing_outcomes=outcomes,
+                          previous_weights=previous)
+
+        if report.resolved or report.weights.updates:
+            async with IngestionService(settings) as service, service.db.session() as session:
+                repo = PredictionRepository(session)
+                newly, _ = loop.resolver.resolve(records, candles_by_asset)
+                await repo.record_outcomes(newly)
+                await repo.upsert_weights(report.weights.updates)
+                await session.commit()
+
+        console.print(
+            f"\n[bold]learning loop[/bold]  resolved {report.resolved}, "
+            f"pending {report.pending}, outcomes in evidence {report.total_outcomes}"
+        )
+        if report.corrupted:
+            console.print(
+                f"[red]{report.corrupted} records refused for hash mismatch[/red]"
+            )
+
+        changes = report.weight_changes
+        if changes:
+            table = Table(header_style="bold", box=None, pad_edge=False)
+            for column in ("scope", "was", "now", "delta", "skill", "n", "p"):
+                table.add_column(column)
+            for update in sorted(changes, key=lambda u: -abs(u.delta))[:25]:
+                colour = "green" if update.delta > 0 else "red"
+                table.add_row(
+                    update.key.label(), f"{update.previous_weight:.4f}",
+                    f"{update.weight:.4f}",
+                    f"[{colour}]{update.delta:+.4f}[/{colour}]",
+                    f"{update.raw_skill:+.4f}", str(update.samples),
+                    f"{update.p_value:.3f}",
+                )
+            console.print(table)
+
+        for record in report.adopted_calibrations:
+            console.print(f"  [green]calibration adopted[/green]: {record.summary()}")
+
+        if show_slices and report.metrics.slices:
+            slices = Table(header_style="bold", box=None, pad_edge=False)
+            for column in ("model", "dimension", "value", "n", "brier", "accuracy"):
+                slices.add_column(column)
+            for entry in sorted(
+                report.metrics.with_evidence(), key=lambda s: (s.model_id, s.dimension)
+            ):
+                slices.add_row(
+                    entry.model_id, entry.dimension, entry.value, str(entry.count),
+                    f"{entry.brier:.4f}", f"{entry.accuracy:.2%}",
+                )
+            console.print(slices)
+            thin = len(report.metrics.slices) - len(report.metrics.with_evidence())
+            if thin:
+                console.print(f"[dim]{thin} slices had insufficient evidence[/dim]")
+
+        colour = "green" if report.learned else "yellow"
+        console.print(f"\n[bold][{colour}]{report.verdict}[/{colour}][/bold]")
+        console.print(
+            "[dim]Storing predictions is not learning. This line reports whether the "
+            "loop changed what the system will do next.[/dim]"
+        )
+
+    asyncio.run(_run())
+
+
+def _row_to_record(row) -> PredictionRecord:
+    """Rebuild a stored prediction, preserving its hash for verification."""
+    frame = _tf(row.timeframe)
+    return PredictionRecord(
+        prediction_id=row.prediction_id,
+        content_hash=row.content_hash,
+        model_id=row.model_id,
+        model_version=row.model_version,
+        asset=row.asset,
+        timeframe=frame,
+        horizon_bars=row.horizon_bars,
+        as_of=row.as_of,
+        resolves_at=row.resolves_at,
+        distribution=Distribution(up=row.prob_up, flat=row.prob_flat, down=row.prob_down),
+        confidence=row.confidence,
+        move_threshold_pct=row.move_threshold_pct,
+        reference_price=row.reference_price,
+        regime=row.regime,
+        volatility_bucket=row.volatility_bucket,
+        data_quality=row.data_quality,
+        is_actionable=row.is_actionable,
+        evidence=row.evidence or {},
+        resolved=row.resolved,
+        created_at=row.created_at,
+    )
+
+
+def _row_to_outcome(row) -> ResolvedOutcome:
+    frame = _tf(row.timeframe)
+    return ResolvedOutcome(
+        prediction_id=row.prediction_id,
+        model_id=row.model_id,
+        asset=row.asset,
+        timeframe=frame,
+        horizon_bars=row.horizon_bars,
+        regime=row.regime,
+        volatility_bucket=row.volatility_bucket,
+        as_of=row.resolved_at - frame.delta * row.horizon_bars,
+        resolved_at=row.resolved_at,
+        realised_direction=Outcome(row.realised_direction),
+        realised_move_pct=row.realised_move_pct,
+        exit_price=row.exit_price,
+        brier=row.brier,
+        log_loss=row.log_loss,
+        correct=row.correct,
+        probability_of_truth=row.probability_of_truth,
+        scored_at=row.scored_at,
+    )
 
 
 def main() -> None:

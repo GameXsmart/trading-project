@@ -10,7 +10,7 @@ from collections.abc import Iterable, Sequence
 from datetime import datetime, timedelta
 from typing import Any, cast
 
-from sqlalchemy import CursorResult, delete, func, select
+from sqlalchemy import CursorResult, delete, func, select, update
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.dialects.sqlite import insert as sqlite_insert
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -37,9 +37,12 @@ from mie.storage.models import (
     IngestRunRow,
     Instrument,
     MarketStateRow,
+    ModelWeightRow,
     NewsEventRow,
     OpenInterestRow,
     PatternStatsRow,
+    PredictionOutcomeRow,
+    PredictionRow,
     SourceQualityScore,
 )
 
@@ -1192,3 +1195,220 @@ class NewsEventRepository:
             .group_by(NewsEventRow.category)
         )
         return {row[0]: int(row[1]) for row in (await self.session.execute(stmt)).all()}
+
+
+class PredictionRepository:
+    """Append-only prediction storage, with outcomes and weights alongside.
+
+    There is no update path for a prediction, and that is the point. The insert uses
+    ``ON CONFLICT DO NOTHING``: re-running the same prediction point collides on its
+    derived id and is dropped, so a re-run can neither duplicate the sample nor revise
+    what was said. The only field ever mutated on a prediction row is ``resolved``,
+    which carries no information about the outcome.
+    """
+
+    def __init__(self, session: AsyncSession) -> None:
+        self.session = session
+
+    async def append(self, records: Sequence[Any]) -> int:
+        """Store predictions, ignoring any that already exist. Returns rows offered."""
+        if not records:
+            return 0
+        rows = [
+            {
+                "prediction_id": r.prediction_id,
+                "content_hash": r.content_hash,
+                "model_id": r.model_id,
+                "model_version": r.model_version,
+                "asset": r.asset.upper(),
+                "timeframe": str(r.timeframe),
+                "horizon_bars": r.horizon_bars,
+                "as_of": ensure_utc(r.as_of),
+                "resolves_at": ensure_utc(r.resolves_at),
+                "prob_up": r.distribution.up,
+                "prob_flat": r.distribution.flat,
+                "prob_down": r.distribution.down,
+                "confidence": r.confidence,
+                "move_threshold_pct": r.move_threshold_pct,
+                "reference_price": r.reference_price,
+                "regime": r.regime,
+                "volatility_bucket": r.volatility_bucket,
+                "data_quality": r.data_quality,
+                "is_actionable": r.is_actionable,
+                "evidence": r.evidence,
+                "resolved": False,
+                "created_at": ensure_utc(r.created_at),
+            }
+            for r in records
+        ]
+        for chunk in _chunks(rows, columns=len(rows[0])):
+            stmt = _upsert(self.session, PredictionRow).values(list(chunk))
+            await self.session.execute(
+                stmt.on_conflict_do_nothing(index_elements=[PredictionRow.prediction_id])
+            )
+        return len(rows)
+
+    async def due(self, now: datetime | None = None, limit: int = 5000) -> list[PredictionRow]:
+        """Unresolved predictions whose horizon has elapsed."""
+        moment = now or utcnow()
+        stmt = (
+            select(PredictionRow)
+            .where(PredictionRow.resolved.is_(False), PredictionRow.resolves_at <= moment)
+            .order_by(PredictionRow.resolves_at)
+            .limit(limit)
+        )
+        return list((await self.session.execute(stmt)).scalars().all())
+
+    async def unresolved(self, limit: int = 20000) -> list[PredictionRow]:
+        stmt = (
+            select(PredictionRow)
+            .where(PredictionRow.resolved.is_(False))
+            .order_by(PredictionRow.as_of)
+            .limit(limit)
+        )
+        return list((await self.session.execute(stmt)).scalars().all())
+
+    async def records(self, limit: int = 100000) -> list[PredictionRow]:
+        """Every stored prediction, resolved or not.
+
+        Recalibration needs the *resolved* ones: a curve is fitted from what a model
+        said paired with what happened, and the prediction row is the only place the
+        distribution it said is kept. Loading only unresolved rows — the obvious thing,
+        since those are what the resolver wants — leaves the calibrator with nothing
+        the moment the backlog clears, and it fails silently rather than loudly.
+        """
+        stmt = select(PredictionRow).order_by(PredictionRow.as_of).limit(limit)
+        return list((await self.session.execute(stmt)).scalars().all())
+
+    async def mark_resolved(self, prediction_ids: Sequence[str]) -> int:
+        if not prediction_ids:
+            return 0
+        total = 0
+        for start in range(0, len(prediction_ids), 500):
+            chunk = list(prediction_ids[start : start + 500])
+            result = cast(
+                CursorResult,
+                await self.session.execute(
+                    update(PredictionRow)
+                    .where(PredictionRow.prediction_id.in_(chunk))
+                    .values(resolved=True)
+                ),
+            )
+            total += result.rowcount or 0
+        return total
+
+    async def record_outcomes(self, outcomes: Sequence[Any]) -> int:
+        """Store resolved outcomes. Also append-only: an outcome is a fact."""
+        if not outcomes:
+            return 0
+        rows = [
+            {
+                "prediction_id": o.prediction_id,
+                "model_id": o.model_id,
+                "asset": o.asset.upper(),
+                "timeframe": str(o.timeframe),
+                "horizon_bars": o.horizon_bars,
+                "regime": o.regime,
+                "volatility_bucket": o.volatility_bucket,
+                "resolved_at": ensure_utc(o.resolved_at),
+                "realised_direction": str(o.realised_direction),
+                "realised_move_pct": o.realised_move_pct,
+                "exit_price": o.exit_price,
+                "brier": o.brier,
+                "log_loss": o.log_loss,
+                "correct": o.correct,
+                "probability_of_truth": o.probability_of_truth,
+                "scored_at": ensure_utc(o.scored_at),
+            }
+            for o in outcomes
+        ]
+        for chunk in _chunks(rows, columns=len(rows[0])):
+            stmt = _upsert(self.session, PredictionOutcomeRow).values(list(chunk))
+            await self.session.execute(
+                stmt.on_conflict_do_nothing(
+                    index_elements=[PredictionOutcomeRow.prediction_id]
+                )
+            )
+        await self.mark_resolved([o.prediction_id for o in outcomes])
+        return len(rows)
+
+    async def outcomes(
+        self,
+        asset: str | None = None,
+        model_id: str | None = None,
+        since: datetime | None = None,
+        limit: int = 50000,
+    ) -> list[PredictionOutcomeRow]:
+        stmt = select(PredictionOutcomeRow).order_by(PredictionOutcomeRow.resolved_at)
+        if asset:
+            stmt = stmt.where(PredictionOutcomeRow.asset == asset.upper())
+        if model_id:
+            stmt = stmt.where(PredictionOutcomeRow.model_id == model_id)
+        if since:
+            stmt = stmt.where(PredictionOutcomeRow.resolved_at >= ensure_utc(since))
+        return list((await self.session.execute(stmt.limit(limit))).scalars().all())
+
+    async def upsert_weights(self, updates: Sequence[Any]) -> int:
+        """Store the current weight per scope, keeping the previous value visible."""
+        if not updates:
+            return 0
+        now = utcnow()
+        rows = [
+            {
+                "model_id": u.key.model_id,
+                "asset": u.key.asset.upper(),
+                "timeframe": u.key.timeframe,
+                "horizon_bars": u.key.horizon_bars,
+                "regime": u.key.regime,
+                "raw_skill": u.raw_skill,
+                "weight": u.weight,
+                "previous_weight": u.previous_weight,
+                "samples": u.samples,
+                "p_value": u.p_value,
+                "significant": u.significant,
+                "updated_at": now,
+            }
+            for u in updates
+        ]
+        for chunk in _chunks(rows, columns=len(rows[0])):
+            stmt = _upsert(self.session, ModelWeightRow).values(list(chunk))
+            stmt = stmt.on_conflict_do_update(
+                index_elements=[
+                    ModelWeightRow.model_id,
+                    ModelWeightRow.asset,
+                    ModelWeightRow.timeframe,
+                    ModelWeightRow.horizon_bars,
+                    ModelWeightRow.regime,
+                ],
+                set_={
+                    "raw_skill": stmt.excluded.raw_skill,
+                    "weight": stmt.excluded.weight,
+                    "previous_weight": stmt.excluded.previous_weight,
+                    "samples": stmt.excluded.samples,
+                    "p_value": stmt.excluded.p_value,
+                    "significant": stmt.excluded.significant,
+                    "updated_at": stmt.excluded.updated_at,
+                },
+            )
+            await self.session.execute(stmt)
+        return len(rows)
+
+    async def weights(self) -> list[ModelWeightRow]:
+        stmt = select(ModelWeightRow).order_by(ModelWeightRow.weight.desc())
+        return list((await self.session.execute(stmt)).scalars().all())
+
+    async def counts(self) -> dict[str, int]:
+        """How many predictions are stored, resolved and pending."""
+        total = await self.session.scalar(select(func.count()).select_from(PredictionRow))
+        resolved = await self.session.scalar(
+            select(func.count()).select_from(PredictionRow).where(PredictionRow.resolved.is_(True))
+        )
+        outcomes = await self.session.scalar(
+            select(func.count()).select_from(PredictionOutcomeRow)
+        )
+        return {
+            "predictions": int(total or 0),
+            "resolved": int(resolved or 0),
+            "pending": int(total or 0) - int(resolved or 0),
+            "outcomes": int(outcomes or 0),
+        }

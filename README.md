@@ -9,8 +9,8 @@ produces **probabilistic, uncertainty-bearing** assessments of market state.
 
 **Status: Phases 1 (ingestion + database), 2 (feature engine), 3 (multi-timeframe
 market state), 4 (pattern and sequence discovery), 5 (news intelligence), 6
-(prediction models), 7 (ensemble, calibration, confidence) and 8 (walk-forward
-backtesting) are complete and tested.**
+(prediction models), 7 (ensemble, calibration, confidence), 8 (walk-forward
+backtesting) and 9 (self-evaluation and learning) are complete and tested.**
 
 **The headline result: none of the eight models beats a climatology baseline, so the
 ensemble publishes nothing.** See
@@ -185,6 +185,58 @@ false confidence, so the harness now names it.
 
 ---
 
+## What Phase 9 delivers — a loop that says whether it learned
+
+Storing predictions is not learning. Computing metrics is not learning. The loop earns
+the word only if it changes what the system does next, so its report distinguishes
+three states rather than two:
+
+- **nothing to learn from** — too few resolved outcomes to say anything;
+- **learned nothing** — enough evidence, and it did not support a change;
+- **learned something** — a weight or a calibration curve moved, with the sample that
+  moved it attached.
+
+| Capability | Detail |
+|---|---|
+| **Append-only, hash-stamped** | Prediction ids are derived from the prediction point, so a re-run collides and is dropped. Verified live: running `mie predict` twice over the same points left the count at 8,100. |
+| **Refused, not repaired** | The hash covers the claim — distribution, confidence, the threshold the outcome is scored against — and is checked on read. A record that fails is refused; whatever it now says is not what the model said. |
+| **Final candles only** | And within one bar of the resolution instant. Resolution uses the threshold *stored with the prediction*, never one recomputed later. |
+| **Sliced five ways** | Asset, timeframe, horizon, regime, volatility bucket — the last recorded at prediction time, not reconstructed. Thin slices report insufficient evidence instead of a number. |
+| **Regime-confined reweighting** | A model that degrades in one regime loses weight there and nowhere else. Skill is not a scalar property of a model. |
+
+**Measured on 8,100 resolved predictions across BTC/ETH/SOL:**
+
+| | Result |
+|---|---|
+| Weight slices evaluated | 160 |
+| **Granted a non-zero weight** | **0** |
+| Calibration curves fitted | 42 |
+| **Adopted** | **6** |
+
+The loop's own verdict: *"learned: 0 weight changes, 6 calibration curves adopted."*
+That is a real change — six model/regime pairs will be calibrated differently tomorrow
+— and it is not the change anyone was hoping for. Nothing learned to trust a model
+more. It learned that six forecasters are systematically miscalibrated in specific
+regimes, including **climatology itself** in downtrends.
+
+**The clearest result in the project.** Ranked by Brier over 900 outcomes each:
+
+| Forecaster | Brier | |
+|---|---|---|
+| `sentiment`, `orderflow`, `sequence` | **0.6667** | *these abstain on every point* |
+| `baseline_climatology` | 0.6668 | |
+| `similarity` | 0.6692 | |
+| `regime`, `technical`, `crossasset`, `timeseries` | 0.6758 – 0.6861 | |
+
+0.6667 is exactly 2/3 — the Brier score of a uniform distribution. **Saying nothing
+beats climatology, and climatology beats every opinion any model formed.**
+
+And once more, the apparent skill lives in the small samples: 29 slices posted skill
+above +0.05, on sample sizes of 2, 4, 7, 10, 19, 61 and 98. The largest edge in the
+entire run, +0.2558, rests on two observations. The gate rejects all of them.
+
+---
+
 ## Quick start
 
 Requires Python 3.12+. No database server, no Docker, nothing else.
@@ -256,6 +308,8 @@ metrics, and quality scoring — until you stop it with Ctrl-C.
 | `mie calibrate BTC` | Fit per-model calibration and report whether it helped. |
 | `mie ensemble BTC` | The ensemble, its confidence decomposition, and the gate. |
 | `mie backtest BTC` | Walk-forward folds with a leakage probe on every model. |
+| `mie predict BTC` | Record predictions for later scoring, before outcomes exist. |
+| `mie learn` | Resolve, measure, reweight — and say whether anything changed. |
 
 ---
 
@@ -322,6 +376,8 @@ rather than buried.
 | **Does the ensemble publish anything?** | **No.** 0 published and 0 super predictions across 2,097 evaluation points on three assets. Six of the gate's nine conditions fail at every point. |
 | Does anything survive walk-forward folding? | **No.** 0 models pass in every fold, 0 in any fold, across three assets × five folds × two fold schemes. Fold-to-fold skill swings roughly an order of magnitude more than it averages. |
 | Does any model read the future? | **No** — and this is tested, not assumed. A deliberately leaky pipeline is caught; the same model on a clean pipeline is not. Four of eight models come back `INCONCLUSIVE` rather than `CLEAN`, because they abstain and so cannot be tested at all. |
+| Does the learning loop learn anything? | **Partly, and not the part that matters.** Over 8,100 resolved predictions it granted **0** of 160 weight slices a non-zero weight, and adopted **6** of 42 calibration curves. It learned that six forecasters are miscalibrated in specific regimes — including climatology in downtrends — not that any model is worth trusting. |
+| What is the single clearest measured result? | **Saying nothing beats climatology, and climatology beats every opinion.** The three best forecasters by Brier score exactly 0.6667 — the uniform distribution — because they abstain on every point. |
 
 What *does* survive measurement is volatility clustering: volume spikes and range
 compression genuinely precede larger-than-usual movement. They say nothing about

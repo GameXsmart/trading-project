@@ -118,7 +118,7 @@ Chosen per workload, not per fashion.
 │   ├── models/        # predictors A-H, baselines, walk-forward evaluation
 │   ├── ensemble/      # calibration, agreement, confidence, super-prediction gate
 │   ├── backtest/      # purged folds, leakage probe, survivorship
-│   ├── evaluation/    # (Phase 9) scoring + learning loop
+│   ├── learning/      # prediction store, resolver, sliced metrics, reweighting
 │   ├── api/           # (Phase 10) FastAPI service
 │   └── alerts/        # (Phase 11) alert rules + channels
 ├── apps/dashboard/    # (Phase 10) Next.js
@@ -273,6 +273,10 @@ signal entirely — it never averages into a confident-looking number.
 This is what separates the system from a dashboard of indicators:
 
 1. Prediction written at `t0`, **before** the outcome exists — append-only, hash-stamped.
+   **Built in Phase 9.** Ids are derived from the prediction point rather than
+   generated, so a re-run collides and is dropped instead of inflating the sample; the
+   hash covers the claim and is verified on read, and a record that fails is refused
+   rather than repaired.
 2. A scheduled evaluator wakes at `t0 + horizon`, resolves the realized outcome from
    final candles only, and writes a `prediction_outcome` row.
 3. Metrics are computed **sliced**: by asset, timeframe, horizon, regime and
@@ -338,13 +342,17 @@ Phases are gated: a phase ships only when the previous one is correct and tested
 See [`docs/PHASES.md`](docs/PHASES.md) for the gate criteria of each.
 **Phases 1 (ingestion + database), 2 (feature engine), 3 (multi-timeframe state),
 4 (pattern and sequence discovery), 5 (news intelligence), 6 (prediction models),
-7 (ensemble, calibration, confidence) and 8 (walk-forward backtesting) are
-implemented.** Phases 9+ are designed above and not yet built.
+7 (ensemble, calibration, confidence), 8 (walk-forward backtesting) and 9
+(self-evaluation and learning) are implemented.** Phases 10+ are designed above and
+not yet built.
 
 **Measured result so far: no model beats a climatology baseline** — verified across 48
 configurations spanning forecast reaches from 3 hours to 60 days, 2,032 slices, none
-passing. Across two thirds of that grid the highest-scoring model was one that abstains
-on every point. So the Phase 7
+passing; then again through purged walk-forward folds, where nothing passed in any
+fold; then again through the Phase 9 loop, where 8,100 resolved predictions granted
+zero weights. Ranked by Brier over those 8,100 outcomes, the three best forecasters are
+the three that abstain on every point, and climatology beats every opinion any model
+formed. So the Phase 7
 ensemble has nothing to weight and publishes nothing on live data. It was built anyway,
 because the layer's job is to *suppress* unjustified output, and a suppression
 mechanism never shown to also permit is indistinguishable from a bug. Every refusal is
