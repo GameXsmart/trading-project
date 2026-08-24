@@ -373,6 +373,14 @@ They are recorded in `config/assets.yaml`, not deleted from it.
 
 ---
 
+## Start here
+
+**[docs/guide.html](docs/guide.html)** — a plain-English handbook covering every command,
+every dashboard panel, how the twelve stages fit together, and how to read a system that
+is built to say "insufficient evidence". Open it in a browser; it needs no server.
+
+---
+
 ## Just run it (Windows)
 
 Double-click **`run-engine.bat`**. It creates the virtual environment if missing,
