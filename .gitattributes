@@ -1,0 +1,22 @@
+# Normalise line endings on the way into the repository.
+#
+# Without this, a clone on Windows commits CRLF and a clone on Linux commits LF for
+# the same file, so a diff between two developers shows every line as changed and the
+# real change is invisible inside it. Text is stored LF in git and checked out with
+# whatever the platform prefers.
+* text=auto eol=lf
+
+# Windows-native scripts must keep CRLF or cmd.exe mis-parses them.
+*.bat text eol=crlf
+*.cmd text eol=crlf
+*.ps1 text eol=crlf
+
+# Evidence files: committed measurement output, never hand-edited.
+docs/*.txt text eol=lf
+
+# Binary, never diffed or line-ending-converted.
+*.png binary
+*.jpg binary
+*.ico binary
+*.db binary
+*.sqlite3 binary
