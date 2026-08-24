@@ -276,23 +276,68 @@ series with no such effect is *not* certified.
 
 ---
 
-## Phase 6 — Prediction models A–H
+## Phase 6 — Prediction models ✅ COMPLETE (result: no model has skill)
 
-**Build**: eight independent predictors — technical structure, time-series
-forecasting, pattern similarity, regime, sentiment, cross-asset, order-flow /
-derivatives, and sequence analysis.
+**Delivered**
 
-**Design constraints**
+- The `Prediction` envelope from ARCHITECTURE §9: a distribution over up/flat/down,
+  confidence kept separate from probability, evidence and counter-evidence,
+  invalidation conditions, and the threshold the outcome will be scored against.
+- Eight independent models, each mapping a *different* substrate — indicators (2),
+  return dynamics (1), analogues (4), regime (3), news (5), peers (1), derivatives (1),
+  event chains (4). `inputs_used()` declares the substrate so overlap is auditable.
+- Three baselines as first-class forecasters: climatology, persistence, uniform.
+- `WalkForwardEvaluator`: no random splits, non-overlapping evaluation points, Brier
+  skill against a baseline, paired significance testing, Benjamini-Hochberg across
+  every slice, results sliced by regime.
+- CLI: `mie evaluate`.
 
-- **Independence is the point.** Eight models sharing one feature set is one model
-  with extra steps and produces false agreement in the ensemble.
-- Every model emits the common `Prediction` envelope (see `ARCHITECTURE.md` §9).
-- Every model must beat a **persistence baseline** on walk-forward evaluation, or it
-  does not ship. Complexity is justified by measured skill or not at all.
+**Gate: enforced, and NOT met by any model.**
 
-**Gate**
-- Each model beats persistence out-of-sample on at least one (asset, timeframe,
-  regime) slice, with the losing slices documented rather than hidden.
+Measured on BTC/ETH/SOL 1h, 12-bar horizon, 699 non-overlapping points each,
+**160 slices in total**:
+
+| Baseline | Models passing |
+|---|---|
+| **climatology** (the honest bar) | **0 of 8** |
+| persistence (the folk bar) | 8 of 8 — *including models that abstain entirely* |
+
+That second row is the more instructive one. `sentiment`, `orderflow` and `sequence`
+abstain on this data — they emit a uniform distribution and no opinion — and they
+"beat" persistence with identical skill of +0.0864. **Doing nothing beats persistence.**
+Any result quoted against it is worthless, which is exactly why climatology is the
+standard here.
+
+Against climatology, every model that actually expresses a view scores *worse* than the
+unconditional base rates. Best skill on any slice was +0.0123, which did not survive
+significance testing across the family.
+
+**This is the answer the phase was built to obtain**, and it is consistent with
+everything measured earlier: Phase 4 found no directional pattern beating drift, and
+Phase 5 could not yet validate that news moves prices. A system that reported a winner
+here would be reporting noise.
+
+**A flaw in my own gate, caught by measurement.** The original criterion — "beats the
+baseline on at least one slice" — is nearly guaranteed by chance across forty slices,
+and `timeseries` initially "passed" on exactly one with skill +0.0123. Inspection showed
+the four *abstaining* models scored an identical +0.0047 on that same slice, meaning
+climatology itself was slightly off there and the model's real margin over doing nothing
+was ~0.008. The gate now requires a one-sided paired test on per-prediction Brier
+differences, corrected with Benjamini-Hochberg across every slice. After that, nothing
+passes.
+
+**Design decisions worth carrying forward**
+
+- **Abstention is a first-class output.** A model with no substrate emits a uniform
+  distribution and zero confidence, and is scored on having done so.
+- **Data quality multiplies into confidence centrally**, in `Predictor.build`, so no
+  model can forget it.
+- **Look-ahead is structural, not conventional.** Models receive a `PredictionContext`
+  built from `candles[:i+1]` and have no database handle; the realised return is read
+  from `candles[i+horizon]`, and the two never meet.
+- **The threshold is volatility-scaled.** A fixed band would make long horizons
+  trivially directional and would mean different things in different regimes, breaking
+  the regime-sliced comparison.
 
 ---
 

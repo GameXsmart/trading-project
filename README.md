@@ -8,10 +8,11 @@ produces **probabilistic, uncertainty-bearing** assessments of market state.
 > interpret — never guarantees, and never investment advice.
 
 **Status: Phases 1 (ingestion + database), 2 (feature engine) and 3 (multi-timeframe
-market state), 4 (pattern and sequence discovery) and 5 (news intelligence) are
-complete and tested** — though the news-impact measurement needs months of
-accumulated events before it can say anything, and currently reports insufficient
-evidence rather than guessing. The full architecture is designed in [`ARCHITECTURE.md`](ARCHITECTURE.md);
+market state), 4 (pattern and sequence discovery), 5 (news intelligence) and 6
+(prediction models) are complete and tested.**
+
+**The headline result: none of the eight models beats a climatology baseline.** See
+[What the measurements say](#what-the-measurements-say). The full architecture is designed in [`ARCHITECTURE.md`](ARCHITECTURE.md);
 the remaining phases are specified in [`docs/PHASES.md`](docs/PHASES.md) and not yet
 built. Nothing in this repo pretends to be further along than it is.
 
@@ -172,6 +173,7 @@ metrics, and quality scoring — until you stop it with Ctrl-C.
 | `mie similar BTC` | Historical analogues of the current state. |
 | `mie news --asset BTC` | Deduplicated, classified news feed. |
 | `mie news-impact BTC` | Measured impact of news on realised volatility. |
+| `mie evaluate BTC` | Walk-forward model skill against a baseline. |
 
 ---
 
@@ -219,6 +221,24 @@ ordinary volatility is worse than no detector.
 
 ---
 
+## What the measurements say
+
+The system is built to answer whether it can predict anything, and to report the
+answer whatever it is. So far the answer is mostly **no**, and that is stated here
+rather than buried.
+
+| Question | Measured answer |
+|---|---|
+| Do classical directional patterns beat the market's own drift? | **No.** 9 of 342 pattern/asset/timeframe/horizon combinations were informative, and every one was direction-*neutral* (volume anomaly, compression, expansion). Breakouts, structure breaks, divergences, trend continuation, liquidity sweeps and momentum exhaustion all failed. |
+| Do event chains predict anything? | **No.** 84 chains occurred often enough to test; none survived correction. |
+| Does the current state have historical analogues? | **Sometimes.** BTC: insufficient evidence (16 comparable moments in 8,548). ETH: 200 analogues rose 36% against a 52% baseline. SOL: matches baseline. |
+| Does news move prices? | **Unknown.** RSS carries a week of history; after thinning, 6 events in the largest category against a 25-event minimum. Reports insufficient evidence and accumulates. |
+| **Do any of the eight models beat a baseline?** | **No.** 0 of 8 against climatology across 160 slices on three assets. All 8 "beat" persistence — but so do the models that abstain entirely, which is why persistence is not the standard. |
+
+What *does* survive measurement is volatility clustering: volume spikes and range
+compression genuinely precede larger-than-usual movement. They say nothing about
+direction, and the system does not pretend otherwise.
+
 ## Configuration
 
 Three layers, lowest priority first:
@@ -255,7 +275,7 @@ gracefully on a plain PostgreSQL without the extension.
 pytest
 ```
 
-396 tests, no network and no infrastructure required — ingestion, validation and
+431 tests, no network and no infrastructure required — ingestion, validation and
 failover run against a deterministic synthetic provider with injectable faults
 (gaps, duplicates, malformed bars, price spikes, outages), and every indicator is
 checked against an independently written reference implementation.

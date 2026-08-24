@@ -21,6 +21,7 @@ and nothing here contains logic of its own.
     mie similar BTC                   historical analogues of the current state
     mie news                          deduplicated, classified news feed
     mie news-impact BTC               measured impact of news on volatility
+    mie evaluate BTC                  walk-forward model skill vs baseline
 """
 
 from __future__ import annotations
@@ -40,6 +41,11 @@ from mie.core.timeframes import Timeframe, utcnow
 from mie.core.types import IngestStatus
 from mie.features.engine import _row_to_candle
 from mie.ingestion.service import IngestionService
+from mie.models.baselines import ClimatologyBaseline, PersistenceBaseline
+from mie.models.evaluation import WalkForwardEvaluator, summarise_thresholds
+from mie.models.predictors import ALL_MODELS
+from mie.models.runner import ContextSource, build_contexts
+from mie.models.types import Horizon
 from mie.news.engine import NewsEngine
 from mie.news.impact import ImpactValidator
 from mie.patterns.evaluation import PatternEvaluator
@@ -1052,6 +1058,116 @@ def news_impact(
             "\n[dim]RSS feeds carry only a few days of history, so this measurement "
             "grows more meaningful as stored events accumulate. Categories below the "
             "evidence threshold report insufficient evidence rather than a guess.[/dim]"
+        )
+
+    asyncio.run(_run())
+
+
+@app.command("evaluate")
+def evaluate(
+    asset: str = typer.Argument(..., help="Canonical symbol, e.g. BTC."),
+    timeframe: str = typer.Option("1h", "--timeframe"),
+    horizon: int = typer.Option(12, "--horizon", help="Forecast horizon, in bars."),
+    baseline: str = typer.Option(
+        "climatology", "--baseline", help="climatology | persistence"
+    ),
+    source: str = typer.Option("binance", "--source"),
+    show_slices: bool = typer.Option(False, "--slices", help="Show every regime slice."),
+) -> None:
+    """Walk history forward and score every model against a baseline.
+
+    A model passes only by beating the baseline with statistical significance on the
+    paired Brier differences, after correcting across every slice tested. Positive
+    skill alone is not a pass: with dozens of slices, some model posts a positive
+    number by luck.
+    """
+
+    async def _run() -> None:
+        settings = _settings()
+        frame = _tf(timeframe)
+        chosen = (
+            PersistenceBaseline() if baseline.startswith("pers") else ClimatologyBaseline()
+        )
+
+        async with IngestionService(settings) as service, service.db.session() as session:
+            rows = await OHLCVRepository(session).fetch(asset, frame, source=source)
+            features = await FeatureRepository(session).fetch(asset, frame, source=source)
+            peers = {}
+            for other in settings.universe.symbols():
+                if other == asset.upper():
+                    continue
+                peer_rows = await OHLCVRepository(session).fetch(
+                    other, frame, source=source, limit=5000
+                )
+                if peer_rows:
+                    peers[other] = [
+                        _row_to_candle(r, other, frame, source) for r in peer_rows
+                    ]
+
+        if len(rows) < 600:
+            console.print(
+                f"[yellow]not enough history[/yellow] for {asset.upper()} {frame} "
+                f"({len(rows)} bars; need 600+)"
+            )
+            return
+
+        candles = [_row_to_candle(r, asset, frame, source) for r in rows]
+        history = [(f.open_time, f.payload) for f in features]
+        contexts = build_contexts(
+            ContextSource(asset, frame, candles, history, peers=peers),
+            Horizon(bars=horizon, timeframe=frame),
+            warmup=450,
+        )
+        if not contexts:
+            console.print("[yellow]no evaluation points could be built[/yellow]")
+            return
+
+        report = WalkForwardEvaluator(chosen).evaluate([m() for m in ALL_MODELS], contexts)
+        balance = summarise_thresholds(contexts)
+
+        console.print(
+            f"\n[bold]{asset.upper()} {frame} +{horizon} bars[/bold] vs "
+            f"[bold]{chosen.model_id}[/bold] - {len(contexts)} non-overlapping points"
+        )
+        console.print(
+            f"class balance: up {balance['up']:.0%} / flat {balance['flat']:.0%} / "
+            f"down {balance['down']:.0%}, threshold "
+            f"{balance['median_threshold_pct']:.2f}%\n"
+        )
+
+        table = Table(header_style="bold")
+        for column in ("model", "n", "brier", "baseline", "skill", "p", "conf", "verdict"):
+            table.add_column(column)
+        shown = (
+            report.scores if show_slices else [s for s in report.scores if s.regime == "all"]
+        )
+        for score in sorted(shown, key=lambda s: -s.skill):
+            colour = "green" if score.beats_baseline else "dim"
+            label = (
+                score.model_id if score.regime == "all" else f"{score.model_id}/{score.regime}"
+            )
+            table.add_row(
+                label, str(score.predictions), f"{score.brier:.4f}",
+                f"{score.baseline_brier:.4f}",
+                f"[{colour}]{score.skill:+.4f}[/{colour}]",
+                f"{score.p_value:.4f}", f"{score.mean_confidence:.2f}",
+                f"[{colour}]{score.verdict[:38]}[/{colour}]",
+            )
+        console.print(table)
+
+        passing = sorted(report.passing_models())
+        failing = sorted(report.failing_models())
+        console.print(
+            f"\n[bold]PASS[/bold] ({len(passing)}): "
+            f"[green]{', '.join(passing) or 'none'}[/green]"
+        )
+        console.print(
+            f"[bold]FAIL[/bold] ({len(failing)}): [dim]{', '.join(failing) or 'none'}[/dim]"
+        )
+        console.print(
+            "\n[dim]A model ships only by beating the baseline with significance across "
+            "the whole family of slices tested. Climatology is the honest bar; beating "
+            "persistence proves little, since even abstaining beats it.[/dim]"
         )
 
     asyncio.run(_run())

@@ -115,7 +115,7 @@ Chosen per workload, not per fashion.
 │   ├── state/         # multi-timeframe market state + regime
 │   ├── patterns/      # detectors, validation gate, similarity, sequences
 │   ├── news/          # RSS ingestion, dedup, classification, impact
-│   ├── models/        # (Phase 6) predictors A-H
+│   ├── models/        # predictors A-H, baselines, walk-forward evaluation
 │   ├── ensemble/      # (Phase 7) meta-model + calibration
 │   ├── backtest/      # (Phase 8) walk-forward harness
 │   ├── evaluation/    # (Phase 9) scoring + learning loop
@@ -133,7 +133,8 @@ Entries annotated with a phase are the **target** layout and do not exist yet:
 directories for unbuilt phases are intentionally absent rather than filled with stubs,
 because an empty module pretending to be a model is worse than no module. What is on
 disk today is `core`, `config`, `storage`, `providers`, `ingestion`, `quality`,
-`features`, `state`, `patterns`, `news`, plus `config/`, `sql/`, `tests/` and `docs/`.
+`features`, `state`, `patterns`, `news`, `models`, plus `config/`, `sql/`, `tests/`
+and `docs/`.
 
 ---
 
@@ -319,5 +320,9 @@ inputs is not.
 Phases are gated: a phase ships only when the previous one is correct and tested.
 See [`docs/PHASES.md`](docs/PHASES.md) for the gate criteria of each.
 **Phases 1 (ingestion + database), 2 (feature engine) and 3 (multi-timeframe state)
-4 (pattern and sequence discovery) and 5 (news intelligence) are implemented.**
-Phases 6+ are designed above and not yet built.
+4 (pattern and sequence discovery), 5 (news intelligence) and 6 (prediction models)
+are implemented.** Phases 7+ are designed above and not yet built.
+
+**Measured result so far: no model beats a climatology baseline.** The ensemble in
+Phase 7 therefore has nothing yet to weight, and building it before a model earns its
+place would be assembling a consensus of things that do not work.
