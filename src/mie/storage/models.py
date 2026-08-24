@@ -443,3 +443,46 @@ class PatternStatsRow(Base):
 
     def __repr__(self) -> str:  # pragma: no cover
         return f"<PatternStatsRow {self.kind} {self.asset} {self.timeframe} +{self.horizon_bars}>"
+
+
+class NewsEventRow(Base):
+    """A deduplicated, classified news story.
+
+    Persisted so that news history *accumulates*. RSS feeds carry only a few days,
+    which is far too little to validate whether news moves prices; every fetch that is
+    stored adds to a growing sample, and the impact model becomes measurable rather
+    than asserted only once enough of it exists. Without persistence the validation
+    could never be more than a few days wide, no matter how long the system ran.
+
+    Keyed on ``cluster_id``, which is derived from the normalised title, so re-fetching
+    the same story updates its coverage rather than inserting a duplicate.
+    """
+
+    __tablename__ = "news_events"
+    __table_args__ = (
+        Index("ix_news_published", "published_at"),
+        Index("ix_news_category_time", "category", "published_at"),
+    )
+
+    cluster_id: Mapped[str] = mapped_column(String(32), primary_key=True)
+    title: Mapped[str] = mapped_column(Text)
+    url: Mapped[str] = mapped_column(Text, default="")
+    #: When the story broke — the earliest article in the cluster.
+    published_at: Mapped[datetime] = _ts_column(index=True)
+    sources: Mapped[dict[str, Any]] = mapped_column(JSON, default=list)
+    category: Mapped[str] = mapped_column(String(24), default="other")
+    sentiment: Mapped[str] = mapped_column(String(16), default="neutral")
+    sentiment_score: Mapped[float] = mapped_column(Float, default=0.0)
+    #: Asset relevance scores, keyed by canonical symbol.
+    relevance: Mapped[dict[str, Any]] = mapped_column(JSON, default=dict)
+    importance: Mapped[float] = mapped_column(Float, default=0.0)
+    confidence: Mapped[float] = mapped_column(Float, default=0.0)
+    coverage: Mapped[int] = mapped_column(Integer, default=1)
+    article_count: Mapped[int] = mapped_column(Integer, default=1)
+    is_recycled: Mapped[bool] = mapped_column(Boolean, default=False)
+    recycled_from: Mapped[str | None] = mapped_column(String(32), nullable=True)
+    first_seen_at: Mapped[datetime] = _ts_column(default=utcnow)
+    updated_at: Mapped[datetime] = _ts_column(default=utcnow)
+
+    def __repr__(self) -> str:  # pragma: no cover
+        return f"<NewsEventRow {self.cluster_id} {self.published_at} {self.category}>"

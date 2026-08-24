@@ -114,7 +114,7 @@ Chosen per workload, not per fashion.
 │   ├── features/      # incremental indicator engine + market structure
 │   ├── state/         # multi-timeframe market state + regime
 │   ├── patterns/      # detectors, validation gate, similarity, sequences
-│   ├── news/          # RSS ingestion, dedup, classification
+│   ├── news/          # RSS ingestion, dedup, classification, impact
 │   ├── models/        # (Phase 6) predictors A-H
 │   ├── ensemble/      # (Phase 7) meta-model + calibration
 │   ├── backtest/      # (Phase 8) walk-forward harness
@@ -319,5 +319,5 @@ inputs is not.
 Phases are gated: a phase ships only when the previous one is correct and tested.
 See [`docs/PHASES.md`](docs/PHASES.md) for the gate criteria of each.
 **Phases 1 (ingestion + database), 2 (feature engine) and 3 (multi-timeframe state)
-and 4 (pattern and sequence discovery) are implemented, and Phase 5 (news) is
-partially implemented.** Phases 6+ are designed above and not yet built.
+4 (pattern and sequence discovery) and 5 (news intelligence) are implemented.**
+Phases 6+ are designed above and not yet built.

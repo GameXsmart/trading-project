@@ -197,7 +197,7 @@ instead of a number tuned to BTC.
 
 ---
 
-## Phase 5 — News and sentiment intelligence 🟡 PARTIAL
+## Phase 5 — News and sentiment intelligence ✅ COMPLETE (impact awaits data)
 
 **Delivered**
 
@@ -212,13 +212,29 @@ instead of a number tuned to BTC.
   separate confidence score.
 - CLI: `mie news`.
 
-**Still to build:** the event-impact model of requirement §9 — magnitude, direction,
-affected assets and duration, **validated against realised post-event volatility
-rather than asserted**. That validation is the harder half of this gate and is
-deliberately not claimed yet.
+- `EventImpactModel` (estimates from priors) and `ImpactValidator` (measures what
+  actually followed), kept rigorously separate — an estimate resting on an untested
+  prior reports `grounded_in_measurement=False` and low confidence, so a hypothesis
+  can never be mistaken for a finding.
+- `news_events` table, so history accumulates across fetches.
+- CLI: `mie news`, `mie news-impact`.
 
-**Gate: partially met.** Deduplication works on live data — four correct cross-outlet
-merges from 129 articles with no false merges. Impact validation is outstanding.
+**Gate: the machinery meets it; the data does not exist yet.**
+
+Deduplication works on live data — four correct cross-outlet merges from 129 articles,
+no false merges. The impact validator is built, tested, and correct, but **cannot yet
+be exercised on real news**: RSS carries about a week of history, and after thinning
+overlapping events that leaves 6 security-incident and 5 ETF stories for BTC against a
+25-event minimum. It reports *insufficient evidence*, which is the right answer.
+
+This is a data limitation, not a code one, and it is why `news_events` is persisted:
+the sample grows with every fetch, and the same command becomes meaningful after
+months of accumulation. Lowering the threshold to manufacture a result was the one
+option not on the table.
+
+The validator is therefore verified against synthetic price series where ground truth
+is known by construction — a genuine volatility jump after events is detected, and a
+series with no such effect is *not* certified.
 
 **Design decisions worth carrying forward**
 
@@ -232,7 +248,7 @@ merges from 129 articles with no false merges. Impact validation is outstanding.
 - **Sentiment is not impact.** Sentiment describes the text; impact is a claim about
   prices and has to be measured against them.
 
-**Three bugs this phase surfaced, all found by measuring rather than reasoning.**
+**Four bugs this phase surfaced, all found by measuring rather than reasoning.**
 
 1. **Bigram shingles were the wrong representation.** Outlets rewrite headlines rather
    than republishing them, so bigram overlap collapses even for unmistakably identical
@@ -252,6 +268,11 @@ merges from 129 articles with no false merges. Impact validation is outstanding.
    merged stories into six single-outlet ones and destroying the coverage count
    deduplication exists to produce. Clustering now runs first, and the age test is
    applied to the story using its most recent coverage.
+4. **A one-sided claim was tested two-sided.** The validator certified "precedes
+   elevated volatility" for a category whose events were followed by *0% elevated vs a
+   17% baseline* — significantly **calmer** than usual. Significance testing says
+   "different"; the claim says "higher". Calmer-than-usual is now a named finding of
+   its own rather than being mislabelled or folded into "no impact".
 
 ---
 

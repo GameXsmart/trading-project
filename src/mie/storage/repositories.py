@@ -37,6 +37,7 @@ from mie.storage.models import (
     IngestRunRow,
     Instrument,
     MarketStateRow,
+    NewsEventRow,
     OpenInterestRow,
     PatternStatsRow,
     SourceQualityScore,
@@ -1081,3 +1082,113 @@ class PatternStatsRepository:
         if timeframe:
             stmt = stmt.where(PatternStatsRow.timeframe == str(timeframe))
         return list((await self.session.scalars(stmt.order_by(PatternStatsRow.p_value))).all())
+
+
+class NewsEventRepository:
+    """Persisted news stories, so history accumulates across fetches."""
+
+    def __init__(self, session: AsyncSession) -> None:
+        self.session = session
+
+    async def upsert_many(self, events: Sequence[Any]) -> int:
+        """Store events, updating coverage for stories already seen.
+
+        Re-fetching is the normal case: a story stays in the feed for days while more
+        outlets pick it up. The update path keeps the *earliest* publication time —
+        when the story broke is what matters for pairing it with price action, and
+        letting a later re-run overwrite it would move the event forward in time and
+        quietly invalidate every impact measurement that used it.
+        """
+        if not events:
+            return 0
+        now = utcnow()
+        rows = [
+            {
+                "cluster_id": e.cluster_id,
+                "title": e.title[:2000],
+                "url": e.url[:2000],
+                "published_at": ensure_utc(e.published_at),
+                "sources": list(e.sources),
+                "category": str(e.category),
+                "sentiment": str(e.sentiment),
+                "sentiment_score": e.sentiment_score,
+                "relevance": {r.asset: r.score for r in e.relevance},
+                "importance": e.importance,
+                "confidence": e.confidence,
+                "coverage": e.coverage,
+                "article_count": e.article_count,
+                "is_recycled": e.is_recycled,
+                "recycled_from": e.recycled_from,
+                "first_seen_at": now,
+                "updated_at": now,
+            }
+            for e in events
+        ]
+        for chunk in _chunks(rows, columns=len(rows[0])):
+            stmt = _upsert(self.session, NewsEventRow).values(list(chunk))
+            stmt = stmt.on_conflict_do_update(
+                index_elements=[NewsEventRow.cluster_id],
+                set_={
+                    # published_at is deliberately absent: the break time is fixed.
+                    "title": stmt.excluded.title,
+                    "sources": stmt.excluded.sources,
+                    "coverage": stmt.excluded.coverage,
+                    "article_count": stmt.excluded.article_count,
+                    "importance": stmt.excluded.importance,
+                    "sentiment": stmt.excluded.sentiment,
+                    "sentiment_score": stmt.excluded.sentiment_score,
+                    "relevance": stmt.excluded.relevance,
+                    "confidence": stmt.excluded.confidence,
+                    "is_recycled": stmt.excluded.is_recycled,
+                    "recycled_from": stmt.excluded.recycled_from,
+                    "updated_at": stmt.excluded.updated_at,
+                },
+            )
+            await self.session.execute(stmt)
+        return len(rows)
+
+    async def recent(
+        self,
+        hours: int = 168,
+        category: str | None = None,
+        asset: str | None = None,
+        exclude_recycled: bool = True,
+        limit: int = 1000,
+    ) -> list[NewsEventRow]:
+        since = utcnow() - timedelta(hours=hours)
+        stmt = (
+            select(NewsEventRow)
+            .where(NewsEventRow.published_at >= since)
+            .order_by(NewsEventRow.published_at.desc())
+            .limit(limit)
+        )
+        if category:
+            stmt = stmt.where(NewsEventRow.category == category)
+        if exclude_recycled:
+            stmt = stmt.where(NewsEventRow.is_recycled.is_(False))
+        rows = list((await self.session.scalars(stmt)).all())
+        if asset:
+            key = asset.upper()
+            rows = [r for r in rows if (r.relevance or {}).get(key, 0.0) >= 0.5]
+        return rows
+
+    async def all_events(
+        self, exclude_recycled: bool = True, limit: int = 10_000
+    ) -> list[NewsEventRow]:
+        """Every stored story, oldest first — the sample impact validation runs on."""
+        stmt = select(NewsEventRow).order_by(NewsEventRow.published_at).limit(limit)
+        if exclude_recycled:
+            stmt = stmt.where(NewsEventRow.is_recycled.is_(False))
+        return list((await self.session.scalars(stmt)).all())
+
+    async def count(self) -> int:
+        return int(await self.session.scalar(select(func.count()).select_from(NewsEventRow)) or 0)
+
+    async def category_counts(self, hours: int = 168) -> dict[str, int]:
+        since = utcnow() - timedelta(hours=hours)
+        stmt = (
+            select(NewsEventRow.category, func.count())
+            .where(NewsEventRow.published_at >= since)
+            .group_by(NewsEventRow.category)
+        )
+        return {row[0]: int(row[1]) for row in (await self.session.execute(stmt)).all()}

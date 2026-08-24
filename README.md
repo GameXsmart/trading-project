@@ -8,9 +8,10 @@ produces **probabilistic, uncertainty-bearing** assessments of market state.
 > interpret — never guarantees, and never investment advice.
 
 **Status: Phases 1 (ingestion + database), 2 (feature engine) and 3 (multi-timeframe
-market state) and 4 (pattern and sequence discovery) are complete and tested; Phase 5
-(news intelligence) is partially complete** — ingestion, deduplication and
-classification are built, the event-impact model is not. The full architecture is designed in [`ARCHITECTURE.md`](ARCHITECTURE.md);
+market state), 4 (pattern and sequence discovery) and 5 (news intelligence) are
+complete and tested** — though the news-impact measurement needs months of
+accumulated events before it can say anything, and currently reports insufficient
+evidence rather than guessing. The full architecture is designed in [`ARCHITECTURE.md`](ARCHITECTURE.md);
 the remaining phases are specified in [`docs/PHASES.md`](docs/PHASES.md) and not yet
 built. Nothing in this repo pretends to be further along than it is.
 
@@ -170,6 +171,7 @@ metrics, and quality scoring — until you stop it with Ctrl-C.
 | `mie patterns show` | Which patterns earned predictive use. |
 | `mie similar BTC` | Historical analogues of the current state. |
 | `mie news --asset BTC` | Deduplicated, classified news feed. |
+| `mie news-impact BTC` | Measured impact of news on realised volatility. |
 
 ---
 
@@ -253,7 +255,7 @@ gracefully on a plain PostgreSQL without the extension.
 pytest
 ```
 
-378 tests, no network and no infrastructure required — ingestion, validation and
+396 tests, no network and no infrastructure required — ingestion, validation and
 failover run against a deterministic synthetic provider with injectable faults
 (gaps, duplicates, malformed bars, price spikes, outages), and every indicator is
 checked against an independently written reference implementation.
@@ -272,8 +274,7 @@ pytest -m network
 
 Phases 6–12 — the model ensemble, backtesting, the learning loop, the dashboard and
 alerts — are **designed** in [`ARCHITECTURE.md`](ARCHITECTURE.md) and **not
-implemented**. Within Phase 5, the event-impact model remains to be built and
-validated against realised post-event volatility. Their directories do not exist rather than containing stubs: an empty
+implemented**. Their directories do not exist rather than containing stubs: an empty
 module pretending to be a model is worse than no module.
 
 The prediction contract, the multi-timeframe agreement model, and the learning loop

@@ -20,6 +20,7 @@ and nothing here contains logic of its own.
     mie patterns show                 which patterns earned predictive use
     mie similar BTC                   historical analogues of the current state
     mie news                          deduplicated, classified news feed
+    mie news-impact BTC               measured impact of news on volatility
 """
 
 from __future__ import annotations
@@ -40,6 +41,7 @@ from mie.core.types import IngestStatus
 from mie.features.engine import _row_to_candle
 from mie.ingestion.service import IngestionService
 from mie.news.engine import NewsEngine
+from mie.news.impact import ImpactValidator
 from mie.patterns.evaluation import PatternEvaluator
 from mie.patterns.registry import PatternRegistry
 from mie.patterns.similarity import SimilarityEngine
@@ -47,6 +49,7 @@ from mie.state.engine import StateEngine
 from mie.storage.repositories import (
     FeatureRepository,
     IngestRunRepository,
+    NewsEventRepository,
     OHLCVRepository,
     PatternStatsRepository,
     QualityRepository,
@@ -978,6 +981,77 @@ def news(
         console.print(
             "\n[dim]Sentiment is a reading of the text, not a forecast of prices. "
             "Coverage counts distinct outlets. Not investment advice.[/dim]"
+        )
+
+    asyncio.run(_run())
+
+
+@app.command("news-impact")
+def news_impact(
+    asset: str = typer.Argument(..., help="Canonical symbol, e.g. BTC."),
+    timeframe: str = typer.Option("1h", "--timeframe"),
+    source: str = typer.Option("binance", "--source"),
+    save: bool = typer.Option(True, "--save/--no-save", help="Store fetched stories."),
+) -> None:
+    """Measure what actually followed news events, by category.
+
+    Impact is measured, never asserted: each category is compared against the
+    unconditional rate of elevated volatility over the same price history, and a
+    category without enough events reports insufficient evidence rather than a number.
+    """
+
+    async def _run() -> None:
+        settings = _settings()
+        frame = _tf(timeframe)
+
+        async with NewsEngine() as engine:
+            events = await engine.fetch_events()
+
+        async with IngestionService(settings) as service:
+            if save and events:
+                async with service.db.session() as session:
+                    await NewsEventRepository(session).upsert_many(events)
+            async with service.db.session() as session:
+                stored_total = await NewsEventRepository(session).count()
+                rows = await OHLCVRepository(session).fetch(asset, frame, source=source)
+
+        if not rows:
+            console.print(f"[yellow]no price history[/yellow] for {asset.upper()} {frame}")
+            return
+
+        candles = [_row_to_candle(r, asset, frame, source) for r in rows]
+        results = ImpactValidator().validate(events, candles, asset, frame)
+        relevant = [
+            e for e in events if e.relevance_for(asset) >= 0.5 and not e.is_recycled
+        ]
+
+        console.print(
+            f"\n[bold]{asset.upper()} news impact[/bold] - {len(relevant)} relevant "
+            f"stories in this fetch, {stored_total} stored in total\n"
+        )
+        if not results:
+            console.print(
+                "[yellow]no category had enough paired events to measure[/yellow]"
+            )
+        else:
+            table = Table(header_style="bold")
+            for column in ("category", "h", "n", "vol ratio", "elevated", "baseline", "verdict"):
+                table.add_column(column)
+            for m in sorted(results, key=lambda m: -m.events):
+                elevated = f"{m.elevated.rate:.0%}" if m.elevated else "-"
+                baseline = f"{m.elevated.baseline:.0%}" if m.elevated else "-"
+                colour = "green" if m.moves_volatility or m.moves_direction else "dim"
+                table.add_row(
+                    str(m.category), str(m.horizon_hours), str(m.events),
+                    f"{m.median_volatility_ratio:.2f}x", elevated, baseline,
+                    f"[{colour}]{m.verdict}[/{colour}]",
+                )
+            console.print(table)
+
+        console.print(
+            "\n[dim]RSS feeds carry only a few days of history, so this measurement "
+            "grows more meaningful as stored events accumulate. Categories below the "
+            "evidence threshold report insufficient evidence rather than a guess.[/dim]"
         )
 
     asyncio.run(_run())
