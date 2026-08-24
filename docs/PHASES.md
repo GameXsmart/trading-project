@@ -312,6 +312,47 @@ Against climatology, every model that actually expresses a view scores *worse* t
 unconditional base rates. Best skill on any slice was +0.0123, which did not survive
 significance testing across the family.
 
+**Confirmed across the horizon grid, not just at 12 hours.** The obvious objection to
+a negative result is that the horizon was wrong — too short to escape microstructure
+noise, too long for anything to persist. So the whole gate was re-run across three
+timeframes and five to six horizons each: **48 configurations, forecast reaches from
+3 hours to 60 days, 2,032 slices**, each capped at the same number of evaluation points
+so the significance test is doing comparable work in every row.
+
+**0 of 2,032 slices passed.** Exactly one configuration produced any p < 0.05 at all
+(SOL 1h, 3-hour reach, `similarity`, skill +0.0253, p = 0.015), and it does not survive
+correction across the family.
+
+Two things in that sweep are worth stating plainly.
+
+*The apparent skill lives entirely in the small samples.*
+
+| Evaluation points | Configurations | Mean best skill | Largest | Smallest p |
+|---|---|---|---|---|
+| n < 100 | 9 | **+0.0303** | +0.0529 | 0.101 |
+| 100–199 | 12 | −0.0041 | +0.0266 | 0.124 |
+| 200–449 | 9 | +0.0015 | +0.0096 | 0.168 |
+| n ≥ 450 | 18 | +0.0041 | +0.0253 | **0.015** |
+
+Every headline number in the top ten came from the sparsest rows — BTC 1d at a 20-day
+reach posted +0.0529 skill on 68 points, and +0.0447 on 22. None reached significance.
+As the sample grows the effect collapses toward zero, which is the signature of noise,
+not of an edge that is merely hard to detect.
+
+*The best model is usually the one that says nothing.* `sentiment`, `orderflow` and
+`sequence` abstain on **100% of points** on this data — verified directly, not
+inferred. Yet `sentiment` was the highest-scoring model in **34 of the 48
+configurations**. Only `similarity` (8), `timeseries` (3), `crossasset` (2) and
+`regime` (1) ever beat an abstention, and never significantly. When a uniform
+distribution outscores every considered opinion across two thirds of a grid this size,
+the considered opinions are worse than useless.
+
+*A minor calibration note.* The flat class holds 35% of outcomes at a 3-hour reach and
+25–29% at longer ones, so `move_threshold`'s √horizon scaling slightly under-scales as
+the horizon grows — real moves accumulate a little faster than a random walk implies.
+The classes stay balanced enough everywhere for Brier scores to remain interpretable,
+so this is recorded rather than corrected.
+
 **This is the answer the phase was built to obtain**, and it is consistent with
 everything measured earlier: Phase 4 found no directional pattern beating drift, and
 Phase 5 could not yet validate that news moves prices. A system that reported a winner

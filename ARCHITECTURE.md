@@ -332,7 +332,10 @@ See [`docs/PHASES.md`](docs/PHASES.md) for the gate criteria of each.
 7 (ensemble, calibration, confidence) are implemented.** Phases 8+ are designed above
 and not yet built.
 
-**Measured result so far: no model beats a climatology baseline**, so the Phase 7
+**Measured result so far: no model beats a climatology baseline** — verified across 48
+configurations spanning forecast reaches from 3 hours to 60 days, 2,032 slices, none
+passing. Across two thirds of that grid the highest-scoring model was one that abstains
+on every point. So the Phase 7
 ensemble has nothing to weight and publishes nothing on live data. It was built anyway,
 because the layer's job is to *suppress* unjustified output, and a suppression
 mechanism never shown to also permit is indistinguishable from a bug. Every refusal is

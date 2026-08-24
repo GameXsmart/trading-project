@@ -274,6 +274,8 @@ rather than buried.
 | Does the current state have historical analogues? | **Sometimes.** BTC: insufficient evidence (16 comparable moments in 8,548). ETH: 200 analogues rose 36% against a 52% baseline. SOL: matches baseline. |
 | Does news move prices? | **Unknown.** RSS carries a week of history; after thinning, 6 events in the largest category against a 25-event minimum. Reports insufficient evidence and accumulates. |
 | **Do any of the eight models beat a baseline?** | **No.** 0 of 8 against climatology across 160 slices on three assets. All 8 "beat" persistence — but so do the models that abstain entirely, which is why persistence is not the standard. |
+| Is that just the wrong horizon? | **No.** Re-run across 48 configurations — three timeframes, forecast reaches from 3 hours to 60 days, **2,032 slices — 0 passed.** Exactly one row reached p < 0.05 before correction. The largest apparent skills all came from the smallest samples and collapsed as n grew. |
+| What scored best across that grid? | **Saying nothing.** `sentiment` abstains on 100% of points and was still the top-scoring model in 34 of 48 configurations. |
 | Does calibrating the models help? | **Almost never.** 3 of 42 (model, regime) curves improved held-out calibration; 21 made it worse and were discarded. Climatology got worse in all four of its regimes. |
 | **Does the ensemble publish anything?** | **No.** 0 published and 0 super predictions across 2,097 evaluation points on three assets. Six of the gate's nine conditions fail at every point. |
 

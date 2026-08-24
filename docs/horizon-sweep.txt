@@ -1,0 +1,79 @@
+Horizon sweep - raw output
+==========================
+
+Produced by re-running the Phase 6 walk-forward gate across 3 timeframes and 5-6
+horizons each, on BTC/ETH/SOL, with every configuration capped at the same number of
+evaluation points so the significance test does comparable work in each row.
+
+Columns: asset, timeframe, +horizon (bars), forecast reach in hours, evaluation points
+used / available, median move threshold, up/flat/down class balance, best-scoring model
+overall, its Brier skill against climatology, its paired one-sided p-value, and which
+models passed the full gate (skill floor + significance surviving Benjamini-Hochberg
+across all 2,032 slices).
+
+Note that `sentiment`, `orderflow` and `sequence` abstain on 100% of points on this
+data, so wherever one of them is "best" the winning entry is a uniform distribution.
+
+Committed as evidence. See docs/PHASES.md, Phase 6, for the analysis.
+
+BTC  1h  +3   (     3h) n=500 /2797  thr= 0.20% 32%/35%/33% best=similarity  skill=+0.0194 p=0.057 PASS=none
+ETH  1h  +3   (     3h) n=500 /2797  thr= 0.27% 32%/35%/33% best=similarity  skill=+0.0094 p=0.188 PASS=none
+SOL  1h  +3   (     3h) n=500 /2797  thr= 0.33% 34%/34%/32% best=similarity  skill=+0.0253 p=0.015 PASS=none
+BTC  1h  +6   (     6h) n=500 /1398  thr= 0.29% 34%/31%/35% best=sentiment   skill=+0.0106 p=0.162 PASS=none
+ETH  1h  +6   (     6h) n=500 /1398  thr= 0.38% 35%/33%/33% best=sentiment   skill=+0.0146 p=0.085 PASS=none
+SOL  1h  +6   (     6h) n=500 /1398  thr= 0.47% 33%/30%/37% best=similarity  skill=+0.0041 p=0.347 PASS=none
+BTC  1h  +12  (    12h) n=500 /699   thr= 0.41% 36%/31%/33% best=sentiment   skill=-0.0091 p=0.848 PASS=none
+ETH  1h  +12  (    12h) n=500 /699   thr= 0.54% 37%/29%/34% best=sentiment   skill=-0.0053 p=0.729 PASS=none
+SOL  1h  +12  (    12h) n=500 /699   thr= 0.66% 37%/26%/37% best=sentiment   skill=-0.0146 p=0.900 PASS=none
+BTC  1h  +24  (    24h) n=349 /349   thr= 0.58% 36%/28%/37% best=sentiment   skill=+0.0060 p=0.275 PASS=none
+ETH  1h  +24  (    24h) n=349 /349   thr= 0.76% 35%/27%/38% best=sentiment   skill=+0.0038 p=0.350 PASS=none
+SOL  1h  +24  (    24h) n=349 /349   thr= 0.93% 37%/26%/37% best=sentiment   skill=+0.0070 p=0.292 PASS=none
+BTC  1h  +48  (    48h) n=174 /174   thr= 0.81% 41%/20%/39% best=sentiment   skill=-0.0112 p=0.781 PASS=none
+ETH  1h  +48  (    48h) n=174 /174   thr= 1.07% 39%/20%/41% best=sentiment   skill=-0.0474 p=0.992 PASS=none
+SOL  1h  +48  (    48h) n=174 /174   thr= 1.31% 35%/28%/37% best=sentiment   skill=+0.0266 p=0.124 PASS=none
+BTC  1h  +72  (    72h) n=116 /116   thr= 1.00% 37%/19%/44% best=sentiment   skill=-0.0081 p=0.656 PASS=none
+ETH  1h  +72  (    72h) n=116 /116   thr= 1.32% 36%/20%/44% best=sentiment   skill=-0.0100 p=0.661 PASS=none
+SOL  1h  +72  (    72h) n=116 /116   thr= 1.67% 38%/22%/40% best=sentiment   skill=-0.0015 p=0.530 PASS=none
+BTC  4h  +3   (    12h) n=500 /1649  thr= 0.45% 41%/30%/29% best=sentiment   skill=-0.0075 p=0.834 PASS=none
+ETH  4h  +3   (    12h) n=500 /1649  thr= 0.62% 41%/31%/28% best=sentiment   skill=-0.0089 p=0.865 PASS=none
+SOL  4h  +3   (    12h) n=500 /1649  thr= 0.89% 38%/32%/30% best=sentiment   skill=+0.0049 p=0.272 PASS=none
+BTC  4h  +6   (    24h) n=500 /824   thr= 0.64% 36%/32%/33% best=sentiment   skill=+0.0034 p=0.357 PASS=none
+ETH  4h  +6   (    24h) n=500 /824   thr= 0.87% 35%/29%/36% best=sentiment   skill=+0.0069 p=0.200 PASS=none
+SOL  4h  +6   (    24h) n=500 /824   thr= 1.26% 33%/32%/34% best=sentiment   skill=+0.0096 p=0.144 PASS=none
+BTC  4h  +12  (    48h) n=412 /412   thr= 0.91% 37%/26%/37% best=sentiment   skill=-0.0114 p=0.872 PASS=none
+ETH  4h  +12  (    48h) n=412 /412   thr= 1.25% 35%/28%/37% best=sentiment   skill=-0.0034 p=0.641 PASS=none
+SOL  4h  +12  (    48h) n=412 /412   thr= 1.78% 34%/28%/38% best=sentiment   skill=-0.0012 p=0.548 PASS=none
+BTC  4h  +30  (   120h) n=164 /164   thr= 1.43% 40%/26%/34% best=sentiment   skill=-0.0116 p=0.743 PASS=none
+ETH  4h  +30  (   120h) n=164 /164   thr= 1.95% 34%/28%/38% best=crossasset  skill=-0.0107 p=0.663 PASS=none
+SOL  4h  +30  (   120h) n=164 /164   thr= 2.86% 37%/23%/40% best=sentiment   skill=-0.0078 p=0.629 PASS=none
+BTC  4h  +60  (   240h) n=82  /82    thr= 2.03% 39%/27%/34% best=timeseries  skill=+0.0388 p=0.144 PASS=none
+ETH  4h  +60  (   240h) n=82  /82    thr= 2.74% 29%/34%/37% best=timeseries  skill=+0.0045 p=0.443 PASS=none
+SOL  4h  +60  (   240h) n=82  /82    thr= 4.09% 34%/30%/35% best=sentiment   skill=+0.0148 p=0.223 PASS=none
+BTC  1d  +3   (    72h) n=459 /459   thr= 1.28% 37%/32%/31% best=sentiment   skill=+0.0018 p=0.405 PASS=none
+ETH  1d  +3   (    72h) n=459 /459   thr= 1.72% 35%/30%/34% best=sentiment   skill=+0.0054 p=0.234 PASS=none
+SOL  1d  +3   (    72h) n=459 /459   thr= 2.64% 34%/33%/32% best=sentiment   skill=+0.0032 p=0.278 PASS=none
+BTC  1d  +5   (   120h) n=275 /275   thr= 1.65% 37%/32%/31% best=sentiment   skill=+0.0096 p=0.168 PASS=none
+ETH  1d  +5   (   120h) n=275 /275   thr= 2.24% 37%/30%/33% best=similarity  skill=-0.0049 p=0.638 PASS=none
+SOL  1d  +5   (   120h) n=275 /275   thr= 3.41% 36%/33%/31% best=sentiment   skill=+0.0080 p=0.169 PASS=none
+BTC  1d  +10  (   240h) n=137 /137   thr= 2.33% 45%/26%/29% best=sentiment   skill=+0.0117 p=0.241 PASS=none
+ETH  1d  +10  (   240h) n=137 /137   thr= 3.20% 39%/26%/35% best=sentiment   skill=+0.0106 p=0.335 PASS=none
+SOL  1d  +10  (   240h) n=137 /137   thr= 4.85% 37%/31%/32% best=timeseries  skill=+0.0099 p=0.321 PASS=none
+BTC  1d  +20  (   480h) n=68  /68    thr= 3.36% 44%/35%/21% best=regime      skill=+0.0529 p=0.101 PASS=none
+ETH  1d  +20  (   480h) n=68  /68    thr= 4.57% 32%/32%/35% best=similarity  skill=+0.0339 p=0.174 PASS=none
+SOL  1d  +20  (   480h) n=68  /68    thr= 6.86% 40%/31%/29% best=sentiment   skill=+0.0212 p=0.199 PASS=none
+BTC  1d  +60  (  1440h) n=22  /22    thr= 5.59% 55%/18%/27% best=similarity  skill=+0.0274 p=0.168 PASS=none
+ETH  1d  +60  (  1440h) n=22  /22    thr= 7.68% 41%/18%/41% best=crossasset  skill=+0.0447 p=0.236 PASS=none
+SOL  1d  +60  (  1440h) n=22  /22    thr=12.17% 36%/41%/23% best=similarity  skill=+0.0348 p=0.116 PASS=none
+====================================================================================================
+runs=48 slices=2032 winning slices=0
+best overall skill per configuration, top 10:
+  +0.0529  BTC 1d +20 regime
+  +0.0447  ETH 1d +60 crossasset
+  +0.0388  BTC 4h +60 timeseries
+  +0.0348  SOL 1d +60 similarity
+  +0.0339  ETH 1d +20 similarity
+  +0.0274  BTC 1d +60 similarity
+  +0.0266  SOL 1h +48 sentiment
+  +0.0253  SOL 1h +3 similarity
+  +0.0212  SOL 1d +20 sentiment
+  +0.0194  BTC 1h +3 similarity
