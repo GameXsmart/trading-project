@@ -24,6 +24,7 @@ and nothing here contains logic of its own.
     mie evaluate BTC                  walk-forward model skill vs baseline
     mie calibrate BTC                 fit and judge per-model calibration
     mie ensemble BTC                  the ensemble, its confidence and the gate
+    mie backtest BTC                  walk-forward folds with a leakage probe
 """
 
 from __future__ import annotations
@@ -37,6 +38,9 @@ import typer
 from rich.console import Console
 from rich.table import Table
 
+from mie.backtest.harness import WalkForwardHarness
+from mie.backtest.leakage import LeakageProbe, Verdict
+from mie.backtest.windows import FoldScheme
 from mie.config.settings import Settings, load_settings
 from mie.core.logging import configure_logging, get_logger
 from mie.core.timeframes import Timeframe, utcnow
@@ -1362,6 +1366,145 @@ def ensemble(
         console.print(
             "[dim]Analytical output only. Nothing here is an instruction to trade, and "
             "no prediction is a guaranteed outcome.[/dim]"
+        )
+
+    asyncio.run(_run())
+
+
+@app.command("backtest")
+def backtest(
+    asset: str = typer.Argument(..., help="Canonical symbol, e.g. BTC."),
+    timeframe: str = typer.Option("1h", "--timeframe"),
+    horizon: int = typer.Option(12, "--horizon", help="Forecast horizon, in bars."),
+    folds: int = typer.Option(5, "--folds"),
+    scheme: str = typer.Option("expanding", "--scheme", help="expanding | rolling"),
+    source: str = typer.Option("binance", "--source"),
+    probe: bool = typer.Option(True, "--probe/--no-probe", help="Run the leakage probe."),
+) -> None:
+    """Walk history forward in folds, fitting on each and testing on the next.
+
+    Calibration and skill weights are fitted on the training window only, then applied
+    to a test window that starts after a purge of one horizon plus an embargo. Every
+    model is probed for look-ahead first; anything caught reading the future is
+    excluded from the results rather than annotated in them.
+    """
+
+    async def _run() -> None:
+        settings = _settings()
+        frame = _tf(timeframe)
+        chosen_scheme = (
+            FoldScheme.ROLLING if scheme.startswith("roll") else FoldScheme.EXPANDING
+        )
+
+        async with IngestionService(settings) as service, service.db.session() as session:
+            rows = await OHLCVRepository(session).fetch(asset, frame, source=source)
+            features = await FeatureRepository(session).fetch(asset, frame, source=source)
+
+        if len(rows) < 800:
+            console.print(
+                f"[yellow]not enough history[/yellow] for a fold backtest "
+                f"({len(rows)} bars; need 800+)"
+            )
+            return
+
+        candles = [_row_to_candle(r, asset, frame, source) for r in rows]
+        context_source = ContextSource(
+            asset, frame, candles, [(f.open_time, f.payload) for f in features]
+        )
+        harness = WalkForwardHarness(
+            folds=folds, scheme=chosen_scheme, run_probe=probe, probe=LeakageProbe(max_points=12)
+        )
+        report = harness.run(
+            [m() for m in ALL_MODELS], context_source, Horizon(bars=horizon, timeframe=frame)
+        )
+
+        console.print(
+            f"\n[bold]{asset.upper()} {frame} +{horizon} bars[/bold] - "
+            f"{len(report.folds)} {chosen_scheme} folds over {len(candles)} bars"
+        )
+
+        if probe:
+            console.print("\n[bold]leakage probe[/bold]")
+            for model_id in sorted(report.leakage):
+                verdict = report.leakage[model_id].verdict
+                colour = {
+                    Verdict.LEAKING: "red",
+                    Verdict.INCONCLUSIVE: "yellow",
+                    Verdict.CLEAN: "green",
+                    Verdict.SUSPICIOUS: "red",
+                }[verdict]
+                console.print(f"  [{colour}]{verdict.value:13}[/{colour}] {model_id}")
+            if report.untestable:
+                console.print(
+                    f"  [dim]{len(report.untestable)} models never responded to their "
+                    f"own inputs, so 'clean' would be unearned for them[/dim]"
+                )
+
+        if not report.folds:
+            console.print("\n[yellow]no usable folds could be built[/yellow]")
+            return
+
+        console.print("\n[bold]folds[/bold]")
+        table = Table(header_style="bold", box=None, pad_edge=False)
+        for column in ("#", "train", "gap", "test", "trn pts", "tst pts", "weights", "calib", "published"):
+            table.add_column(column)
+        for result in report.folds:
+            table.add_row(
+                str(result.fold.index),
+                result.train_window.label(),
+                str(result.fold.gap_bars),
+                result.test_window.label(),
+                str(result.train_points),
+                str(result.test_points),
+                str(len(result.trained_weights.skilled_models())),
+                f"{result.usable_calibrations}/{result.fitted_calibrations}",
+                str(result.ensemble_published),
+            )
+        console.print(table)
+
+        console.print("\n[bold]per-fold skill (overall slice)[/bold]")
+        stability = report.stability()
+        series = report.skill_by_model()
+        skills = Table(header_style="bold", box=None, pad_edge=False)
+        skills.add_column("model")
+        for index in range(len(report.folds)):
+            skills.add_column(f"f{index}")
+        skills.add_column("mean")
+        skills.add_column("spread")
+        for model_id in sorted(series):
+            average, spread = stability.get(model_id, (0.0, 0.0))
+            skills.add_row(
+                model_id,
+                *[f"{value:+.3f}" for value in series[model_id]],
+                f"{average:+.4f}",
+                f"[{'red' if spread > 0.05 else 'dim'}]{spread:.4f}[/]",
+            )
+        console.print(skills)
+
+        for group in report.identical_series():
+            console.print(
+                f"[yellow]identical in every fold[/yellow]: {', '.join(group)} "
+                f"- not {len(group)} independent results"
+            )
+
+        every = sorted(report.passing_in_every_fold())
+        any_fold = sorted(report.passing_any_fold())
+        console.print(
+            f"\npass in [bold]every[/bold] fold ({len(every)}): "
+            f"[green]{', '.join(every) or 'none'}[/green]"
+        )
+        console.print(
+            f"pass in [bold]any[/bold] fold ({len(any_fold)}): "
+            f"[dim]{', '.join(any_fold) or 'none'}[/dim]"
+        )
+        if report.excluded:
+            console.print(
+                f"[red]EXCLUDED for leakage[/red]: {', '.join(sorted(report.excluded))}"
+            )
+        console.print(
+            "\n[dim]Passing one fold out of five is what a model with no skill does "
+            "roughly one time in five. The spread across folds is the number worth "
+            "reading: a model that swings has found an era, not an edge.[/dim]"
         )
 
     asyncio.run(_run())

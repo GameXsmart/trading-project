@@ -484,23 +484,102 @@ machinery fires when a skilled, agreeing, calibrated panel is supplied.
 
 ---
 
-## Phase 8 — Backtesting and walk-forward evaluation
+## Phase 8 — Backtesting and walk-forward evaluation ✅ COMPLETE (result: nothing survives folding)
 
-**Build**: the walk-forward harness — rolling-window fit, next-window predict, across
-bull, bear, sideways, and high-volatility regimes.
+**Delivered**
 
-**Design constraints**
+- **A leakage probe that tests look-ahead rather than arguing about it**
+  (`backtest/leakage.py`). At a prediction point, build the context normally; then
+  rebuild it from history in which everything strictly *after* the prediction instant
+  has been replaced with implausible data — prices tripled, direction reversed — and
+  re-run the model. A model that cannot see the future must produce a bit-identical
+  prediction. Any difference is proof, not suspicion.
+- **The control, which matters as much.** The probe also corrupts the *past* and
+  requires the output to change. A model that ignores its inputs passes the future
+  test trivially, so its verdict is `INCONCLUSIVE`, never `CLEAN`. A detector that
+  reports "clean" for something it cannot test launders ignorance into assurance.
+- **A second, independent screen for the probe's blind spot.** Perturbation tests the
+  pipeline; a model reading the future through a channel outside the context it was
+  handed is untouched by it. `implausible_skill` catches that class: on this data a
+  Brier skill above 0.25 is a bug, not a discovery. Both the catch and the boundary
+  between the two mechanisms are asserted in tests.
+- **Purged, embargoed folds** (`backtest/windows.py`). A training point at bar *t* is
+  labelled by bar *t + horizon*, so the last `horizon` training bars carry information
+  from inside the test window and are dropped. An embargo of `horizon / 4` follows, to
+  break serial correlation across the boundary. Every window records its exact bar
+  range and timestamps, and `Fold.leaks()` verifies its own construction — a fold whose
+  gap does not cover the purge is never run.
+- **Rolling-window fit, next-window predict** (`backtest/harness.py`). Phase 7's
+  calibration curves and skill weights are fitted on the training window *only* and
+  applied to the test window, with Phase 7's `fitted_through` guard enforcing the
+  separation. Phase 6 and 7 derived those artefacts from the same run they were used
+  in — fine for measuring machinery, useless as an estimate of live performance.
+- **Survivorship handling** (`backtest/universe.py`): as-of universe selection, with
+  `survivorship_gap` quantifying what a present-day asset list would get wrong.
+- CLI: `mie backtest`.
 
-- **Never a random split.** Time-series data shuffled into train/test leaks the
-  future into the past, and the resulting metrics are fiction.
-- Every fit records the exact data window used, so leakage is auditable afterwards.
-- Survivorship bias is addressed explicitly: delisted assets stay in the historical
-  universe.
+**Gate: both criteria met.**
 
-**Gate**
-- A deliberately leaky model is *caught by the harness* — the test suite proves the
-  leakage detector works, rather than assuming it.
-- Results are reported per regime; a single blended accuracy number is not accepted.
+| Criterion | Result |
+|---|---|
+| A deliberately leaky model is caught by the harness | **Met.** A `_LeakySource` carrying the realistic bug — handing the model the whole series instead of the prefix ending at `as_of` — is caught, with the same model on a clean pipeline coming back `CLEAN`. Leaks through *confidence alone* are caught too. An oracle model, invisible to perturbation by construction, is caught by the skill screen and excluded. |
+| Results are reported per regime, not as one blended number | **Met.** Every fold reports per-regime slices, and the harness additionally reports per-fold skill, its spread, and which models pass in *every* fold rather than in any. |
+
+**The probe's verdict on the shipped pipeline: no model leaks.** Identical across all
+six runs — `regime`, `similarity`, `technical` and `timeseries` come back `CLEAN`;
+`crossasset`, `orderflow`, `sentiment` and `sequence` come back `INCONCLUSIVE`, because
+they abstain on all available data and so never responded to the control either.
+Reporting those four as clean would have been unearned, and the harness says so
+instead. Not one model was ever flagged `LEAKING`.
+
+**A defect the control condition caught, in the probe itself.** The first
+implementation rebuilt the corrupted sources as a plain `ContextSource`, discarding the
+subclass — so on a leaky pipeline it compared a leaky context (900 bars) against a
+correct one (501 bars) and reported a "leak" that was an artefact of the rebuild. It
+flagged the right model for the wrong reason. The control test — asserting that an
+unresponsive model shows *zero* past-response — is what exposed it. The rebuild now
+preserves the source's type.
+
+**Measured on live data: nothing survives folding.**
+
+Across BTC, ETH and SOL on 1h with a 12-bar horizon, five folds each, under both
+expanding and rolling fold schemes — **6 runs, 30 folds, 48 model-runs**:
+
+| | Result |
+|---|---|
+| Models passing in **every** fold | **0 of 48** |
+| Models passing in **any** fold | **0 of 48** |
+| Models excluded for leakage | 0 |
+| Ensemble predictions published across all test windows | **0** |
+| Mean per-fold skill | +0.0104 |
+| Mean fold-to-fold **spread** | 0.0498 |
+
+**The spread is the number worth reading, and it is 4.1× the mean.** Per-fold skill
+swings roughly four times as much as it averages, and that ratio is the whole result:
+on SOL, `regime` runs from −0.041 to +0.045 across five folds for a mean of +0.006, a
+swing fifteen times the average. A model whose result depends this heavily on which
+slice of history it landed in has found an era, not an edge. This is also why "passes
+in any fold" is the wrong question — with five folds and eight models, some model
+posting a good number somewhere is close to certain, and only "every fold" resists it.
+
+**Fitted weights do not survive into the next window.** On BTC, fold 3's training
+window granted four models a non-zero skill weight. Fold 4's granted none, and the
+ensemble published nothing in either. This is precisely what Phases 6 and 7 could not
+measure, because they fitted and applied on the same data.
+
+**Four "independent" models produce bit-identical results.** `crossasset`,
+`orderflow`, `sentiment` and `sequence` post the same skill to four decimal places in
+every fold on every asset — because all four abstain on this data, and four uniform
+distributions score identically. Phase 7's independence discount handles their *votes*,
+but nothing until now made the redundancy visible in the results, so
+`identical_series()` reports it directly. Four numbers in a results table that are
+actually one number is exactly how an ensemble talks itself into false confidence.
+
+**Survivorship: the mechanism exists, and currently corrects nothing.** No delistings
+are recorded, so the as-of universe and the survivor universe coincide and
+`survivorship_gap` reports zero bias. That is a fact about a small, young, deliberately
+liquid universe — not evidence that survivorship bias is unimportant. The mechanism is
+here so the first delisting is handled correctly rather than discovered afterwards.
 
 ---
 

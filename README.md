@@ -9,8 +9,8 @@ produces **probabilistic, uncertainty-bearing** assessments of market state.
 
 **Status: Phases 1 (ingestion + database), 2 (feature engine), 3 (multi-timeframe
 market state), 4 (pattern and sequence discovery), 5 (news intelligence), 6
-(prediction models) and 7 (ensemble, calibration, confidence) are complete and
-tested.**
+(prediction models), 7 (ensemble, calibration, confidence) and 8 (walk-forward
+backtesting) are complete and tested.**
 
 **The headline result: none of the eight models beats a climatology baseline, so the
 ensemble publishes nothing.** See
@@ -144,6 +144,47 @@ own observed interval.
 
 ---
 
+## What Phase 8 delivers — a harness that catches its own leaks
+
+Every other defence against look-ahead in this repo is structural — an argument that
+the code is correct. Phase 8 tests the claim instead.
+
+The **leakage probe** takes a prediction point, builds the context normally, then
+rebuilds it from history in which everything strictly *after* the prediction instant
+has been replaced with implausible data. A model that cannot see the future must
+produce a bit-identical prediction; any difference is proof of a leak rather than
+suspicion of one.
+
+The **control matters as much**: the probe also corrupts the past and requires the
+output to change. A model that ignores its inputs passes the future test trivially, so
+its verdict is `INCONCLUSIVE`, never `CLEAN`. A detector that reports "clean" for
+something it cannot test launders ignorance into assurance.
+
+| Capability | Detail |
+|---|---|
+| **Purged, embargoed folds** | A training label reaching *h* bars forward contaminates the last *h* training bars, so they are dropped; an embargo follows to break serial correlation. `Fold.leaks()` verifies its own construction and an unsound fold is never run. |
+| **Rolling fit, next-window predict** | Phase 7's calibration and skill weights are fitted on the training window only — the thing Phases 6 and 7 structurally could not measure, since they fitted and applied on the same data. |
+| **Two independent leak detectors** | Perturbation proves pipeline leaks; an implausible-skill screen catches the class perturbation structurally cannot see. The boundary between them is asserted in tests, not implied away. |
+| **Auditable windows** | Every fold records exact bar ranges and timestamps, so what a fit was allowed to see is checkable afterwards rather than re-derived from the code. |
+| **Survivorship** | As-of universe selection, with the bias quantified. No delistings are recorded yet, so it currently corrects nothing — stated rather than left implicit. |
+
+**Measured: nothing survives folding.** Across BTC/ETH/SOL, five folds each, under both
+expanding and rolling schemes — **0 models pass in every fold, 0 in any fold, 0 caught
+leaking, 0 ensemble predictions published.**
+
+The spread is the number worth reading. On SOL, `regime` swings from −0.041 to +0.045
+across five folds for a mean of +0.006 — a fold-to-fold swing fifteen times the
+average. A result that depends this heavily on which slice of history it landed in is
+an era, not an edge.
+
+**Four "independent" models post identical results.** `crossasset`, `orderflow`,
+`sentiment` and `sequence` score the same to four decimal places in every fold on every
+asset, because all four abstain and four uniform distributions score alike. Four
+numbers in a table that are actually one number is how an ensemble talks itself into
+false confidence, so the harness now names it.
+
+---
+
 ## Quick start
 
 Requires Python 3.12+. No database server, no Docker, nothing else.
@@ -214,6 +255,7 @@ metrics, and quality scoring — until you stop it with Ctrl-C.
 | `mie evaluate BTC` | Walk-forward model skill against a baseline. |
 | `mie calibrate BTC` | Fit per-model calibration and report whether it helped. |
 | `mie ensemble BTC` | The ensemble, its confidence decomposition, and the gate. |
+| `mie backtest BTC` | Walk-forward folds with a leakage probe on every model. |
 
 ---
 
@@ -278,6 +320,8 @@ rather than buried.
 | What scored best across that grid? | **Saying nothing.** `sentiment` abstains on 100% of points and was still the top-scoring model in 34 of 48 configurations. |
 | Does calibrating the models help? | **Almost never.** 3 of 42 (model, regime) curves improved held-out calibration; 21 made it worse and were discarded. Climatology got worse in all four of its regimes. |
 | **Does the ensemble publish anything?** | **No.** 0 published and 0 super predictions across 2,097 evaluation points on three assets. Six of the gate's nine conditions fail at every point. |
+| Does anything survive walk-forward folding? | **No.** 0 models pass in every fold, 0 in any fold, across three assets × five folds × two fold schemes. Fold-to-fold skill swings roughly an order of magnitude more than it averages. |
+| Does any model read the future? | **No** — and this is tested, not assumed. A deliberately leaky pipeline is caught; the same model on a clean pipeline is not. Four of eight models come back `INCONCLUSIVE` rather than `CLEAN`, because they abstain and so cannot be tested at all. |
 
 What *does* survive measurement is volatility clustering: volume spikes and range
 compression genuinely precede larger-than-usual movement. They say nothing about

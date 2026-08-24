@@ -1,0 +1,40 @@
+Walk-forward backtest - raw aggregate output
+===========================================
+
+BTC/ETH/SOL on 1h, 12-bar horizon, 5 purged and embargoed folds per run, under both
+expanding and rolling fold schemes. Calibration curves and skill weights are fitted on
+each fold's training window only and applied to its test window.
+
+"every" / "any" count models passing the full Phase 6 gate in every fold / in at least
+one. "identical" lists groups of models whose per-fold skill vectors are bit-identical -
+in every run the same four, all of which abstain on this data.
+
+Committed as evidence. See docs/PHASES.md, Phase 8, for the analysis.
+
+BTC expanding folds=5 every=0 any=0 excluded=[] identical=[('crossasset', 'orderflow', 'sentiment', 'sequence')]
+ETH expanding folds=5 every=0 any=0 excluded=[] identical=[('crossasset', 'orderflow', 'sentiment', 'sequence')]
+SOL expanding folds=5 every=0 any=0 excluded=[] identical=[('crossasset', 'orderflow', 'sentiment', 'sequence')]
+BTC rolling   folds=5 every=0 any=0 excluded=[] identical=[('crossasset', 'orderflow', 'sentiment', 'sequence')]
+ETH rolling   folds=5 every=0 any=0 excluded=[] identical=[('crossasset', 'orderflow', 'sentiment', 'sequence')]
+SOL rolling   folds=5 every=0 any=0 excluded=[] identical=[('crossasset', 'orderflow', 'sentiment', 'sequence')]
+
+==============================================================================
+runs=6  folds=30  models x runs=48
+passed EVERY fold: 0
+passed ANY fold:   0
+mean per-fold skill:      +0.0104
+mean fold-to-fold spread: 0.0498
+spread / |mean| ratio:    4.1x
+identical-result groups found: 6
+
+leakage verdicts across all runs:
+  crossasset   inconclusive
+  orderflow    inconclusive
+  regime       clean
+  sentiment    inconclusive
+  sequence     inconclusive
+  similarity   clean
+  technical    clean
+  timeseries   clean
+
+any model ever LEAKING: False

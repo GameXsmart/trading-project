@@ -117,7 +117,7 @@ Chosen per workload, not per fashion.
 │   ├── news/          # RSS ingestion, dedup, classification, impact
 │   ├── models/        # predictors A-H, baselines, walk-forward evaluation
 │   ├── ensemble/      # calibration, agreement, confidence, super-prediction gate
-│   ├── backtest/      # (Phase 8) walk-forward harness
+│   ├── backtest/      # purged folds, leakage probe, survivorship
 │   ├── evaluation/    # (Phase 9) scoring + learning loop
 │   ├── api/           # (Phase 10) FastAPI service
 │   └── alerts/        # (Phase 11) alert rules + channels
@@ -293,7 +293,11 @@ This is what separates the system from a dashboard of indicators:
    models reading the same substrate cannot corroborate each other.
 6. Retraining is **walk-forward only** — rolling-window fit, next-window predict,
    never a random split. Every fit records the exact data window used so leakage is
-   auditable after the fact.
+   auditable after the fact. **Built in Phase 8**, with two additions the original
+   design did not name: training windows are *purged* of the last `horizon` bars,
+   whose labels reach across the boundary, and an embargo follows to break serial
+   correlation. Omitting the purge is the most common way a walk-forward backtest
+   leaks, precisely because the split looks clean without it.
 
 ---
 
@@ -309,6 +313,11 @@ A provider outage, a quality-score collapse, a regime the models have no calibra
 record for, or strong inter-model disagreement each move the system down that ladder.
 Silence is an acceptable output. A confident-looking number produced from broken
 inputs is not.
+
+Phase 8 adds one more rung above the top: **a model caught reading the future is
+excluded from the results entirely**, not annotated within them. Its scores are
+meaningless, and a meaningless number placed beside meaningful ones will eventually be
+read as if it were meaningful.
 
 ---
 
@@ -328,9 +337,9 @@ inputs is not.
 Phases are gated: a phase ships only when the previous one is correct and tested.
 See [`docs/PHASES.md`](docs/PHASES.md) for the gate criteria of each.
 **Phases 1 (ingestion + database), 2 (feature engine), 3 (multi-timeframe state),
-4 (pattern and sequence discovery), 5 (news intelligence), 6 (prediction models) and
-7 (ensemble, calibration, confidence) are implemented.** Phases 8+ are designed above
-and not yet built.
+4 (pattern and sequence discovery), 5 (news intelligence), 6 (prediction models),
+7 (ensemble, calibration, confidence) and 8 (walk-forward backtesting) are
+implemented.** Phases 9+ are designed above and not yet built.
 
 **Measured result so far: no model beats a climatology baseline** — verified across 48
 configurations spanning forecast reaches from 3 hours to 60 days, 2,032 slices, none
