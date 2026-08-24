@@ -120,7 +120,8 @@ Chosen per workload, not per fashion.
 │   ├── backtest/      # purged folds, leakage probe, survivorship
 │   ├── learning/      # prediction store, resolver, sliced metrics, reweighting
 │   ├── api/           # read-only FastAPI service + the dashboard it serves
-│   └── alerts/        # rules, a rate budget that protects attention, channels
+│   ├── alerts/        # rules, a rate budget that protects attention, channels
+│   └── perf/          # declared latency budgets and measurement against them
 │       └── static/    # the dashboard page (no build step; see PHASES.md)
 ├── config/            # default.yaml, assets.yaml — no secrets
 ├── sql/               # TimescaleDB-specific DDL
@@ -352,8 +353,8 @@ See [`docs/PHASES.md`](docs/PHASES.md) for the gate criteria of each.
 **Phases 1 (ingestion + database), 2 (feature engine), 3 (multi-timeframe state),
 4 (pattern and sequence discovery), 5 (news intelligence), 6 (prediction models),
 7 (ensemble, calibration, confidence), 8 (walk-forward backtesting), 9
-(self-evaluation and learning), 10 (API and dashboard) and 11 (alerts) are
-implemented.** Phase 12 is designed above and not yet built.
+(self-evaluation and learning), 10 (API and dashboard), 11 (alerts) and 12
+(optimisation and scaling) are implemented.** All twelve phases are complete.
 
 **Measured result so far: no model beats a climatology baseline** — verified across 48
 configurations spanning forecast reaches from 3 hours to 60 days, 2,032 slices, none

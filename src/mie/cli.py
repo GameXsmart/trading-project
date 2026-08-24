@@ -29,6 +29,7 @@ and nothing here contains logic of its own.
     mie learn                         resolve, measure, reweight - and say what changed
     mie serve                         the read-only API and dashboard
     mie alerts                        evaluate the alert rules once
+    mie bench                         measure against the declared latency budgets
 """
 
 from __future__ import annotations
@@ -57,7 +58,7 @@ from mie.core.types import IngestStatus
 from mie.ensemble.calibration import CalibrationLibrary, reliability_diagram
 from mie.ensemble.gate import SuperPredictionGate
 from mie.ensemble.meta import EnsembleModel, SkillWeights
-from mie.features.engine import _row_to_candle
+from mie.features.engine import FeatureSet, _row_to_candle, build_indicators
 from mie.ingestion.service import IngestionService
 from mie.learning.loop import LearningLoop
 from mie.learning.records import PredictionRecord, ResolvedOutcome, volatility_bucket
@@ -72,6 +73,7 @@ from mie.news.impact import ImpactValidator
 from mie.patterns.evaluation import PatternEvaluator
 from mie.patterns.registry import PatternRegistry
 from mie.patterns.similarity import SimilarityEngine
+from mie.perf.benchmarks import LATENCY_BUDGETS, BenchmarkReport, measure, measure_async
 from mie.state.engine import StateEngine
 from mie.storage.repositories import (
     FeatureRepository,
@@ -1888,6 +1890,209 @@ def _regime_of(candles) -> str:
     from mie.models.runner import _regime_of as regime
 
     return regime(candles) if candles else "unknown"
+
+
+@app.command("bench")
+def bench(
+    asset: str = typer.Option("BTC", "--asset"),
+    timeframe: str = typer.Option("1h", "--timeframe"),
+    source: str = typer.Option("binance", "--source"),
+    samples: int = typer.Option(3, "--samples"),
+) -> None:
+    """Measure the system against its declared latency budgets.
+
+    Budgets are set from what each operation is *for* — a poll sweep has a bar
+    boundary to hit, an API request has a person waiting — not from what the code
+    currently does. A budget derived from the current measurement guarantees a pass
+    and measures nothing.
+    """
+
+    async def _run() -> None:
+        settings = _settings()
+        frame = _tf(timeframe)
+        symbols = settings.universe.symbols()
+        report = BenchmarkReport()
+
+        async with IngestionService(settings) as service:
+            async def _query() -> int:
+                async with service.db.session() as session:
+                    rows = await OHLCVRepository(session).fetch_recent(
+                        asset, frame, source=source, limit=1000
+                    )
+                    return len(rows)
+
+            async def _sweep() -> int:
+                total = 0
+                async with service.db.session() as session:
+                    repo = OHLCVRepository(session)
+                    for symbol in symbols:
+                        total += len(
+                            await repo.fetch_recent(symbol, frame, source=source, limit=2)
+                        )
+                return total
+
+            report.benchmarks.append(
+                await measure_async(
+                    "query: recent bars",
+                    _query,
+                    LATENCY_BUDGETS["query: recent bars"][0],
+                    samples=samples,
+                    scale=f"1000 bars, {asset.upper()} {frame}",
+                )
+            )
+            report.benchmarks.append(
+                await measure_async(
+                    "poll sweep (all assets, 1 timeframe)",
+                    _sweep,
+                    LATENCY_BUDGETS["poll sweep (all assets, 1 timeframe)"][0],
+                    samples=samples,
+                    scale=f"{len(symbols)} assets",
+                )
+            )
+
+            async with service.db.session() as session:
+                rows = await OHLCVRepository(session).fetch_recent(
+                    asset, frame, source=source, limit=3000
+                )
+                features = await FeatureRepository(session).fetch(
+                    asset, frame, source=source
+                )
+                events_before = sum(
+                    (await QualityRepository(session).event_counts(hours=24)).values()
+                )
+
+        if len(rows) < 500:
+            console.print(
+                f"[yellow]not enough stored history[/yellow] for {asset.upper()} {frame}"
+            )
+            return
+
+        candles = [_row_to_candle(r, asset, frame, source) for r in rows]
+        history = [(f.open_time, f.payload) for f in features]
+        horizon = Horizon(bars=12, timeframe=frame)
+        context_source = ContextSource(asset, frame, candles, history)
+        last = len(context_source.candles) - 1
+
+        report.benchmarks.append(
+            measure(
+                "build one prediction context",
+                lambda: context_source.context_at(last, horizon),
+                LATENCY_BUDGETS["build one prediction context"][0],
+                samples=max(20, samples * 10),
+                scale=f"{len(candles)} bars, {len(history)} feature rows",
+            )
+        )
+        report.benchmarks.append(
+            measure(
+                "walk-forward contexts (1 asset)",
+                lambda: build_contexts(context_source, horizon, warmup=450),
+                LATENCY_BUDGETS["walk-forward contexts (1 asset)"][0],
+                samples=samples,
+                scale=f"{len(candles)} bars",
+            )
+        )
+
+        # A warm feature set, then time folding a single bar into it — which is what
+        # the live path actually does. Timing a cold recompute of the whole window
+        # would measure warmup, not the per-bar cost that has to fit inside a bar.
+        warm = FeatureSet(
+            asset=asset.upper(), timeframe=frame, source=source,
+            indicators=build_indicators(frame),
+        )
+        for candle in candles[:-1]:
+            warm.update(candle)
+        pending = candles[-1]
+        counter = {"n": 0}
+
+        def _one_bar() -> None:
+            # Each timed call must fold a bar the set has not seen, so replay the last
+            # bar with its clock moved forward rather than re-feeding the same one,
+            # which the engine correctly refuses as out of order.
+            counter["n"] += 1
+            warm.update(
+                pending.model_copy(
+                    update={"open_time": pending.open_time + frame.delta * counter["n"]}
+                )
+            )
+
+        report.benchmarks.append(
+            measure(
+                "features: one bar",
+                _one_bar,
+                LATENCY_BUDGETS["features: one bar"][0],
+                samples=max(10, samples),
+                warmup=0,
+                scale=f"{len(warm.indicators)} indicators, warm state",
+            )
+        )
+
+        # The API is measured through the ASGI app rather than over a socket: the
+        # network hop is the same for every endpoint and would only add noise to the
+        # comparison between them.
+        from httpx import ASGITransport, AsyncClient
+
+        from mie.api.app import create_app
+
+        api = create_app(settings)
+        async with (
+            AsyncClient(transport=ASGITransport(app=api), base_url="http://bench") as http,
+            api.router.lifespan_context(api),
+        ):
+            for label, path in (
+                ("api: latest prediction", f"/api/prediction/{asset.upper()}"),
+                ("api: asset grid", "/api/assets"),
+                ("api: correlation matrix", "/api/correlation"),
+            ):
+
+                async def _call(target: str = path) -> None:
+                    response = await http.get(target)
+                    if response.status_code != 200:
+                        raise RuntimeError(f"{target} returned {response.status_code}")
+
+                report.benchmarks.append(
+                    await measure_async(
+                        label,
+                        _call,
+                        LATENCY_BUDGETS[label][0],
+                        samples=samples,
+                        scale=f"{len(symbols)} assets",
+                    )
+                )
+
+        report.quality_events = events_before
+        report.baseline_quality_events = events_before
+
+        console.print(f"\n[bold]{len(symbols)} assets configured[/bold]  "
+                      f"{asset.upper()} {frame}, {len(candles)} bars stored\n")
+        table = Table(header_style="bold", box=None, pad_edge=False)
+        for column in ("operation", "median", "budget", "worst", "headroom", ""):
+            table.add_column(column)
+        for entry in report.benchmarks:
+            colour = "green" if entry.within_budget else "red"
+            table.add_row(
+                entry.name,
+                f"{entry.median_ms:.2f}ms",
+                f"{entry.budget_ms:.0f}ms",
+                f"{entry.worst_ms:.2f}ms",
+                f"{entry.headroom:.0f}x",
+                f"[{colour}]{'ok' if entry.within_budget else 'OVER'}[/{colour}]",
+            )
+        console.print(table)
+        breached = report.over_budget()
+        console.print(
+            f"\n[bold]{len(report.benchmarks) - len(breached)}[/bold] of "
+            f"{len(report.benchmarks)} within budget"
+            + (f"  [red]OVER: {', '.join(b.name for b in breached)}[/red]" if breached else "")
+        )
+        console.print(
+            f"[dim]data-quality events in the last 24h: {report.quality_events}[/dim]"
+        )
+        console.print(
+            "[dim]Budgets come from what each operation is for, not from what it "
+            "currently does. Headroom is the point of a budget.[/dim]"
+        )
+
+    asyncio.run(_run())
 
 
 def main() -> None:

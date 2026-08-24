@@ -10,8 +10,8 @@ produces **probabilistic, uncertainty-bearing** assessments of market state.
 **Status: Phases 1 (ingestion + database), 2 (feature engine), 3 (multi-timeframe
 market state), 4 (pattern and sequence discovery), 5 (news intelligence), 6
 (prediction models), 7 (ensemble, calibration, confidence), 8 (walk-forward
-backtesting), 9 (self-evaluation and learning), 10 (API and dashboard) and 11 (alerts)
-are complete and tested.**
+backtesting), 9 (self-evaluation and learning), 10 (API and dashboard), 11 (alerts) and
+12 (optimisation and scaling) are complete and tested. All twelve phases are done.**
 
 **The headline result: none of the eight models beats a climatology baseline, so the
 ensemble publishes nothing.** See
@@ -328,6 +328,51 @@ mie alerts --dry-run
 
 ---
 
+## What Phase 12 delivers — budgets, and two optimisations that earned their place
+
+Profile first, optimise only what the profile indicts, and reject what does not pay.
+
+**Context construction was quadratic.** Every prediction context re-scanned every
+auxiliary series end to end — 806,190 close-time comparisons in one walk-forward run.
+Those series are sorted, so the cut is a bisect:
+
+| 600 contexts over 8,800 bars | |
+|---|---|
+| Linear scan per context | 8.638s |
+| Bisect on pre-sorted keys | **0.139s — 62×** |
+
+End to end a real 699-context evaluation went from **18.87s to 1.30s**. A regression
+test checks each cut against the scan it replaced, because a pure performance change
+must be a no-op on results.
+
+**And one optimisation was rejected.** The profile put the similarity model at 92% of
+model time, so I built a cache for its standardised vectors. It was *correct* — 699/699
+identical predictions — and **24% slower**, because the measured hit rate was **0.7%**:
+the normalisation statistics are medians over a growing window, so they shift almost
+every call. Reverted. A slower system with more moving parts is not an optimisation.
+
+**No Redis, no NATS, no second language runtime.** The plan allows them only if
+profiling shows a genuine bottleneck. It didn't — the poll sweep has 258× headroom, and
+the hot path was an algorithm, not something an event bus relocates.
+
+**The gate, at 50 assets across three timeframes** (667,517 candles, backfilled in
+4m19s): **8 of 8 operations within budget**, from 9× to 362× headroom. A full poll
+sweep of 47 assets takes 58ms against a 1-minute bar.
+
+```bash
+mie bench
+```
+
+**Scaling found the first real delistings.** Chasing 44 empty responses turned up MATIC
+(migrated to POL), FTM (migrated to Sonic) and EOS (delisted from both tracked venues).
+Two mechanisms fired on real data for the first time: **provider failover carried MATIC
+and EOS to Coinbase** after Binance dropped them, and **Phase 8's survivorship module —
+which had recorded zero delistings for four phases — now records three.** A backtest
+over the mid-2024 universe drawn from today's survivors would silently drop 6% of it.
+They are recorded in `config/assets.yaml`, not deleted from it.
+
+---
+
 ## Quick start
 
 Requires Python 3.12+. No database server, no Docker, nothing else.
@@ -403,6 +448,7 @@ metrics, and quality scoring — until you stop it with Ctrl-C.
 | `mie learn` | Resolve, measure, reweight — and say whether anything changed. |
 | `mie serve` | The read-only API and dashboard on http://127.0.0.1:8000. |
 | `mie alerts` | Evaluate the alert rules once, within the rate budget. |
+| `mie bench` | Measure the system against its declared latency budgets. |
 
 ---
 
@@ -473,6 +519,7 @@ rather than buried.
 | What is the single clearest measured result? | **Saying nothing beats climatology, and climatology beats every opinion.** The three best forecasters by Brier score exactly 0.6667 — the uniform distribution — because they abstain on every point. |
 | What does the dashboard show? | **"Insufficient evidence", with the specific conditions that failed.** Three of the super-prediction gate's nine conditions pass; the rest are reported with their numbers. That is the honest rendering of everything above. |
 | How much does it alert? | **422 of 1,238 raised, over 29 days across three assets** — 66% suppressed, and reported as a digest rather than swallowed. Zero of those were directional. |
+| Does it scale? | **Yes, with room.** 8 of 8 operations within budget at 50 assets across three timeframes, 9× to 362× headroom. Two optimisations earned their place; a third was measured, found 24% slower, and reverted. |
 
 What *does* survive measurement is volatility clustering: volume spikes and range
 compression genuinely precede larger-than-usual movement. They say nothing about

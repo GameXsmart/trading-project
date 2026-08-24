@@ -16,13 +16,17 @@ that the only convenient way to do it: :meth:`HistoricalUniverse.active_at` answ
 what was tradeable at a moment, and :meth:`survivorship_gap` reports how much a
 present-day list would have differed.
 
-**Current state, stated plainly: no delistings are recorded.** All ten configured
-assets have been continuously listed for the whole stored history, so on this data the
-as-of universe and the survivor universe are identical and the correction changes
-nothing. That is a fact about a small, young, deliberately liquid universe — not
-evidence that survivorship bias is unimportant. The mechanism exists so that the first
-delisting is handled correctly rather than discovered afterwards, and
-:meth:`survivorship_gap` will report a non-zero number the moment one is recorded.
+**This stopped being hypothetical in Phase 12.** For ten phases the configured
+universe was ten large, continuously-listed assets, the as-of and survivor universes
+were identical, and this module corrected nothing. Scaling to fifty assets surfaced
+three real casualties within a single afternoon: MATIC migrated to POL, FTM migrated to
+Sonic, and EOS lost its last tracked venue in December 2025. A backtest over the
+universe as it stood in mid-2024, selected from today's survivors, would silently drop
+all three — 6% of the sample, chosen by an outcome that was not knowable at the time.
+
+They are recorded in ``config/assets.yaml`` rather than deleted from it. An asset
+removed from the file vanishes from history too, which is the bias rather than a fix
+for it.
 """
 
 from __future__ import annotations
@@ -30,6 +34,7 @@ from __future__ import annotations
 from collections.abc import Iterable, Sequence
 from dataclasses import dataclass, field
 from datetime import datetime
+from typing import Any
 
 from mie.core.timeframes import utcnow
 
@@ -109,6 +114,25 @@ class HistoricalUniverse:
     """The observation universe, with its listing history."""
 
     listings: list[AssetListing] = field(default_factory=list)
+
+    @classmethod
+    def from_config(cls, universe: Any) -> HistoricalUniverse:
+        """Build from the configured asset universe, delistings included.
+
+        This is the path that should be used in anger. :meth:`from_symbols` assumes
+        continuous listing, which is the assumption that produces survivorship bias;
+        this reads the recorded ``delisted_at`` dates instead.
+        """
+        return cls(
+            [
+                AssetListing(
+                    symbol=asset.symbol,
+                    delisted_at=getattr(asset, "delisted_at", None),
+                    reason=getattr(asset, "delisted_reason", "") or "",
+                )
+                for asset in universe.enabled()
+            ]
+        )
 
     @classmethod
     def from_symbols(cls, symbols: Iterable[str]) -> HistoricalUniverse:

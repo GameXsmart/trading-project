@@ -13,6 +13,7 @@ YAML. Secrets live only in layer 3 — nothing sensitive is ever committed.
 from __future__ import annotations
 
 import os
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any, Literal
 
@@ -226,11 +227,39 @@ class AssetConfig(_Strict):
     # Per-provider symbol overrides for the cases convention cannot cover
     # (Kraken calls Bitcoin XBT, for example).
     overrides: dict[str, str] = Field(default_factory=dict)
+    #: When the asset stopped trading, if it did. Recorded rather than deleted: an
+    #: asset removed from this file vanishes from history too, and a backtest over a
+    #: universe that quietly drops its failures measures survivors rather than markets.
+    delisted_at: datetime | None = None
+    #: Why it left. "Delisted from one venue" and "the token migrated to a new ticker"
+    #: have different implications for whether the history is usable.
+    delisted_reason: str = ""
 
     @field_validator("symbol")
     @classmethod
     def _upper(cls, value: str) -> str:
         return value.strip().upper()
+
+    @field_validator("delisted_at")
+    @classmethod
+    def _aware(cls, value: datetime | None) -> datetime | None:
+        """Normalise to UTC.
+
+        A bare ``2025-10-15`` in YAML parses to a naive datetime, and comparing that
+        with the timezone-aware clock this system uses everywhere else raises rather
+        than quietly misbehaving — which is the right failure, but only if it happens
+        in a test and not in a backtest six months from now.
+        """
+        if value is None:
+            return None
+        return value.replace(tzinfo=UTC) if value.tzinfo is None else value.astimezone(UTC)
+
+    @property
+    def is_listed(self) -> bool:
+        return self.delisted_at is None
+
+    def active_at(self, moment: datetime) -> bool:
+        return self.delisted_at is None or moment < self.delisted_at
 
 
 class AssetUniverse(_Strict):
@@ -242,8 +271,26 @@ class AssetUniverse(_Strict):
     def enabled(self) -> list[AssetConfig]:
         return [a for a in self.assets if a.enabled]
 
-    def symbols(self) -> list[str]:
-        return [a.symbol for a in self.enabled()]
+    def symbols(self, include_delisted: bool = False) -> list[str]:
+        """Symbols to operate on.
+
+        Delisted assets are excluded by default, because polling something that no
+        longer trades produces an empty response every cycle and a data-quality event
+        with it. They are *not* removed from the file, so any analysis that needs the
+        universe as it stood at some past moment can still ask for them.
+        """
+        return [
+            a.symbol
+            for a in self.enabled()
+            if include_delisted or a.is_listed
+        ]
+
+    def delisted(self) -> list[AssetConfig]:
+        return [a for a in self.assets if not a.is_listed]
+
+    def active_at(self, moment: datetime) -> list[str]:
+        """The universe as it stood at ``moment`` — the survivorship-free selection."""
+        return sorted(a.symbol for a in self.enabled() if a.active_at(moment))
 
     def get(self, symbol: str) -> AssetConfig | None:
         target = symbol.strip().upper()

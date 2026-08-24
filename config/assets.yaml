@@ -57,3 +57,169 @@ assets:
     name: Polkadot
     tier: 2
     overrides: { coingecko: polkadot }
+
+  - symbol: TRX
+    name: TRX
+    tier: 3
+
+  - symbol: MATIC
+    name: MATIC
+    tier: 3
+    delisted_at: 2025-10-15
+    delisted_reason: "migrated to POL; last venue (coinbase) stopped 2025-10-14"
+
+  - symbol: LTC
+    name: LTC
+    tier: 3
+
+  - symbol: SHIB
+    name: SHIB
+    tier: 3
+
+  - symbol: UNI
+    name: UNI
+    tier: 3
+
+  - symbol: ATOM
+    name: ATOM
+    tier: 3
+
+  - symbol: XLM
+    name: XLM
+    tier: 3
+
+  - symbol: ETC
+    name: ETC
+    tier: 3
+
+  - symbol: FIL
+    name: FIL
+    tier: 3
+
+  - symbol: HBAR
+    name: HBAR
+    tier: 3
+
+  - symbol: APT
+    name: APT
+    tier: 3
+
+  - symbol: ARB
+    name: ARB
+    tier: 3
+
+  - symbol: NEAR
+    name: NEAR
+    tier: 3
+
+  - symbol: VET
+    name: VET
+    tier: 3
+
+  - symbol: ICP
+    name: ICP
+    tier: 3
+
+  - symbol: OP
+    name: OP
+    tier: 3
+
+  - symbol: INJ
+    name: INJ
+    tier: 3
+
+  - symbol: GRT
+    name: GRT
+    tier: 3
+
+  - symbol: AAVE
+    name: AAVE
+    tier: 3
+
+  - symbol: ALGO
+    name: ALGO
+    tier: 3
+
+  - symbol: SAND
+    name: SAND
+    tier: 3
+
+  - symbol: MANA
+    name: MANA
+    tier: 3
+
+  - symbol: AXS
+    name: AXS
+    tier: 3
+
+  - symbol: EOS
+    name: EOS
+    tier: 3
+    delisted_at: 2025-12-11
+    delisted_reason: "delisted from binance 2025-05-26, coinbase 2025-12-10"
+
+  - symbol: THETA
+    name: THETA
+    tier: 3
+
+  - symbol: XTZ
+    name: XTZ
+    tier: 3
+
+  - symbol: FTM
+    name: FTM
+    tier: 3
+    delisted_at: 2025-01-14
+    delisted_reason: "migrated to S (Sonic); no venue carried it after 2025-01-13"
+
+  - symbol: RUNE
+    name: RUNE
+    tier: 3
+
+  - symbol: CHZ
+    name: CHZ
+    tier: 3
+
+  - symbol: CRV
+    name: CRV
+    tier: 3
+
+  - symbol: SNX
+    name: SNX
+    tier: 3
+
+  - symbol: LDO
+    name: LDO
+    tier: 3
+
+  - symbol: IMX
+    name: IMX
+    tier: 3
+
+  - symbol: GALA
+    name: GALA
+    tier: 3
+
+  - symbol: ENJ
+    name: ENJ
+    tier: 3
+
+  - symbol: ZEC
+    name: ZEC
+    tier: 3
+
+  - symbol: DASH
+    name: DASH
+    tier: 3
+
+  - symbol: COMP
+    name: COMP
+    tier: 3
+
+  - symbol: 1INCH
+    name: 1INCH
+    tier: 3
+
+  - symbol: SUSHI
+    name: SUSHI
+    tier: 3

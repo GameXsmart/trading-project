@@ -11,6 +11,7 @@ never touch. A model receives the context and has no other handle on the world.
 
 from __future__ import annotations
 
+from bisect import bisect_right
 from collections.abc import Mapping, Sequence
 from datetime import datetime
 
@@ -52,25 +53,51 @@ class ContextSource:
         self.peers = {k: [c for c in v if c.is_final] for k, v in (peers or {}).items()}
         self.funding = sorted(funding, key=lambda pair: pair[0])
         self.open_interest = sorted(open_interest, key=lambda pair: pair[0])
-        self.news = list(news)
+        # News carries no guaranteed order from its source, so it is sorted here;
+        # everything else already is, and bisecting an unsorted list would silently
+        # return the wrong slice rather than fail.
+        self.news = sorted(
+            (event for event in news if getattr(event, "published_at", None) is not None),
+            key=lambda event: event.published_at,  # type: ignore[attr-defined]
+        )
         self.data_quality = data_quality
+
+        # Sorted key arrays, built once, so every "as of" cut below is a bisect
+        # instead of a scan. Kept beside the data they index rather than recomputed,
+        # because a close time derived twice is a close time that can disagree.
+        close_time = timeframe.close_time
+        self._close_times = [close_time(c.open_time) for c in self.candles]
+        self._feature_closes = [close_time(moment) for moment, _ in self.feature_history]
+        self._peer_closes = {
+            name: [close_time(c.open_time) for c in series]
+            for name, series in self.peers.items()
+        }
+        self._funding_times = [moment for moment, _ in self.funding]
+        self._oi_times = [moment for moment, _ in self.open_interest]
+        self._news_times = [event.published_at for event in self.news]  # type: ignore[attr-defined]
 
     def context_at(self, index: int, horizon: Horizon) -> PredictionContext | None:
         """Build the context as it stood at ``candles[index]``.
 
         ``as_of`` is that bar's *close*: the bar has completed, so its data is known,
         and nothing after it is.
+
+        Every "everything up to ``as_of``" cut is a **bisect on a pre-sorted key**, not
+        a scan. The two are equivalent because every one of these series is sorted by
+        time — the constructor sorts them and keeps the sorted close times beside them
+        — and the difference is the whole cost of the module: profiling a single
+        walk-forward run found 806,190 close-time comparisons, because each of 698
+        contexts re-scanned every peer series end to end. That is quadratic in the
+        length of history, which is exactly the shape that turns a fast backtest into
+        one nobody runs.
         """
         if index < 1 or index >= len(self.candles):
             return None
-        as_of = self.timeframe.close_time(self.candles[index].open_time)
+        as_of = self._close_times[index]
         history = self.candles[: index + 1]
 
-        features_upto = [
-            (moment, values)
-            for moment, values in self.feature_history
-            if self.timeframe.close_time(moment) <= as_of
-        ]
+        cut = bisect_right(self._feature_closes, as_of)
+        features_upto = self.feature_history[:cut]
         latest_features = features_upto[-1][1] if features_upto else {}
 
         return PredictionContext(
@@ -83,17 +110,14 @@ class ContextSource:
             feature_history=features_upto,
             state=self._state(latest_features),
             peers={
-                name: [c for c in candles if self.timeframe.close_time(c.open_time) <= as_of]
+                name: candles[: bisect_right(self._peer_closes[name], as_of)]
                 for name, candles in self.peers.items()
             },
-            news=[
-                event
-                for event in self.news
-                if getattr(event, "published_at", None) is not None
-                and event.published_at <= as_of  # type: ignore[attr-defined]
-            ],
-            funding=[(t, v) for t, v in self.funding if t <= as_of],
-            open_interest=[(t, v) for t, v in self.open_interest if t <= as_of],
+            news=self.news[: bisect_right(self._news_times, as_of)],
+            funding=self.funding[: bisect_right(self._funding_times, as_of)],
+            open_interest=(
+                self.open_interest[: bisect_right(self._oi_times, as_of)]
+            ),
             data_quality=self.data_quality,
             regime=_regime_of(history),
         )

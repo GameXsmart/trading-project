@@ -1,0 +1,60 @@
+Latency budgets and optimisation - raw output
+============================================
+
+Measured on the scaled universe: 50 configured assets (47 still listed) across
+1h, 4h and 1d, 667,517 stored candles, backfilled in 4m19s.
+
+Budgets come from what each operation is for, not from what the code currently
+does. A budget set to the current measurement guarantees a pass and measures
+nothing. Headroom is the point.
+
+--- mie bench ---
+
+47 assets configured  BTC 1h, 3000 bars stored
+
+operation                             median    budget   worst     headroom    
+query: recent bars                    12.12ms   250ms    12.77ms   21x       ok
+poll sweep (all assets, 1 timeframe)  54.95ms   15000ms  58.73ms   273x      ok
+build one prediction context          0.07ms    25ms     0.11ms    362x      ok
+walk-forward contexts (1 asset)       26.70ms   5000ms   28.12ms   187x      ok
+features: one bar                     0.04ms    5ms      0.10ms    128x      ok
+api: latest prediction                101.91ms  1500ms   236.11ms  15x       ok
+api: asset grid                       230.47ms  2000ms   250.38ms  9x        ok
+api: correlation matrix               352.76ms  3000ms   366.67ms  8x        ok
+
+8 of 8 within budget
+data-quality events in the last 24h: 154
+Budgets come from what each operation is for, not from what it currently does. 
+Headroom is the point of a budget.
+
+--- before / after, the two optimisations profiling justified ---
+8800 bars, 8800 feature rows, 2 peers
+  linear scan per context (before)       8.638s  for 600 contexts
+  bisect on sorted keys (after)          0.139s  for 600 contexts
+
+  Timeframe.delta, 1M calls: construct 0.544s -> table 0.068s (8.0x)
+
+--- data-quality event rate, original 10 assets vs the 40 added ---
+stored bars: original 10 = 153,007   added 40 = 552,016
+
+original  events=  11  per 100k bars =   7.19
+    outlier              7
+    impossible_move      4
+
+added     events= 143  per 100k bars =  25.91
+    gap                  38
+    empty_response       36
+    outlier              35
+    provider_failover    17
+    impossible_move      9
+    provider_error       8
+
+assets with no data at all:
+  0: none
+
+empty/error responses by asset:
+    EOS      17
+    MATIC    14
+    FTM      7
+    ARB      3
+    APT      3

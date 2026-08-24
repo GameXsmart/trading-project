@@ -863,18 +863,114 @@ requires deliberate configuration and does not arrive by default.
 
 ---
 
-## Phase 12 — Optimisation and scaling
+## Phase 12 — Optimisation and scaling ✅ COMPLETE (result: two optimisations earned, one rejected, three delistings found)
 
-**Build**: WebSocket feeds, Redis hot state, an out-of-process event bus (NATS),
-parallel feature computation, and query tuning.
+**Delivered**
 
-**Design constraints**
+- **Declared latency budgets** (`perf/benchmarks.py`), set from what each operation is
+  *for* rather than from what the code currently does — a budget derived from the
+  current measurement guarantees a pass and measures nothing.
+- **Two optimisations, each justified by a profile taken first.**
+- **A universe scaled to 50 assets** across 1h, 4h and 1d — 667,517 candles, backfilled
+  in 4m19s.
+- **Survivorship recorded rather than assumed**: `delisted_at` on the asset config,
+  `AssetUniverse.active_at`, and `HistoricalUniverse.from_config`.
+- CLI: `mie bench`.
 
-- WebSockets are added **alongside** polling, never instead of it: they are better for
-  latency and worse for reliability, and the fallback must already exist.
-- Rust or Go enters only if profiling shows a genuine CPU bottleneck (most likely
-  order-book microstructure). A second toolchain must be earned.
+**Gate: latency met with large headroom; the quality half needs its own paragraph.**
 
-**Gate**
-- 50+ assets across all timeframes sustained within latency budget, with no increase
-  in data-quality events versus the polling baseline.
+> *50+ assets across all timeframes sustained within latency budget, with no increase
+> in data-quality events versus the polling baseline.*
+
+| Operation | Median | Budget | Headroom |
+|---|---|---|---|
+| query: recent bars | 13.4ms | 250ms | 19× |
+| poll sweep, all assets | 58.1ms | 15,000ms | **258×** |
+| build one prediction context | 0.07ms | 25ms | **362×** |
+| walk-forward contexts, 1 asset | 29.0ms | 5,000ms | 172× |
+| features: one bar | 0.03ms | 5ms | 156× |
+| api: latest prediction | 90.2ms | 1,500ms | 17× |
+| api: asset grid | 229.1ms | 2,000ms | 9× |
+| api: correlation matrix | 341.3ms | 3,000ms | 9× |
+
+**8 of 8 within budget.** The poll sweep is the one that matters for sustainability: a
+full sweep of 47 assets takes 58ms against a 1-minute bar, so the ingestion loop has
+roughly 1,000× the time it needs.
+
+**The two optimisations profiling actually justified.**
+
+*Context construction was quadratic.* Every context re-scanned every auxiliary series
+end to end to find "everything up to `as_of`" — 806,190 close-time comparisons in a
+single walk-forward run. All those series are sorted by time, so the cut is a bisect.
+
+| | 600 contexts over 8,800 bars |
+|---|---|
+| Linear scan per context | 8.638s |
+| Bisect on pre-sorted keys | **0.139s** — 62× |
+
+End to end, loading and building a real 699-context evaluation went from **18.87s to
+1.30s (14.5×)**. A regression test checks each cut against the scan it replaced, because
+this is a pure performance change and must be a no-op on results.
+
+*`Timeframe.delta` built a `timedelta` on every call* — 8× slower than a table lookup,
+for seven values that never change.
+
+**The optimisation that was rejected, and why that matters.** The profile put
+`SimilarityModel` at 92% of all model time, with vector standardisation and
+normalisation at 55% of that. I built a cache for the standardised vectors, guarded by
+exact equality of the statistics that produced them, keyed by series and verified
+against the prefix it was extending. It was **correct** — 699/699 identical predictions,
+and identical again when two assets were interleaved through one engine — and it was
+**24% slower**, because the measured cache hit rate was **0.7%**. The normalisation
+statistics are medians over a window that grows every call, so they shift almost every
+time and exact-equality reuse can essentially never fire. It was reverted. A slower
+system with more moving parts is not an optimisation, and the honest record of trying
+is worth more than the code.
+
+**No Redis, no NATS, no second language runtime.** §12's own constraint is that a
+second toolchain must be earned by profiling; the same standard applies to a second
+datastore and a second process boundary. Nothing in the profile indicts anything they
+would fix — the poll sweep has 258× headroom and the hot path was an algorithm, not a
+bottleneck an event bus relocates.
+
+**The quality half of the gate, honestly.** Absolute event counts rose, so the rate is
+the only fair comparison:
+
+| | Events | Per 100k bars |
+|---|---|---|
+| Original 10 assets | 11 | **7.19** |
+| Added 40 assets | 143 | **25.91** |
+
+The original universe did not regress. The added assets run 3.6× higher, and the causes
+are identifiable rather than mysterious: 44 of the 143 are `empty_response` and
+`provider_error` concentrated in three symbols, 38 are `gap` from the same cause, and
+the remaining 44 are `outlier` and `impossible_move` on small-caps that genuinely move
+more (DASH +14.4%, SUSHI −25.9% in a single bar). This is not scaling degrading the
+pipeline; it is a larger, less liquid universe being correctly described.
+
+**Scaling found the first real delistings — and two mechanisms fired for the first
+time.** Chasing those empty responses turned up three dead series:
+
+| Asset | Last bar | What happened |
+|---|---|---|
+| MATIC | binance 2024-09-10, **coinbase 2025-10-14** | migrated to POL |
+| FTM | binance 2025-01-13 | migrated to S (Sonic) |
+| EOS | binance 2025-05-26, **coinbase 2025-12-10** | delisted from both |
+
+Two things in that table had never happened on real data before. **Provider failover
+carried MATIC and EOS across venues** after Binance dropped them, recorded as
+`provider_failover` events — Phase 1's priority failover doing exactly its job, months
+after it was written. And **Phase 8's survivorship module, which had recorded zero
+delistings for four phases and corrected nothing, now has three.** A backtest over the
+universe as it stood in mid-2024, selected from today's survivors, would silently drop
+6% of it.
+
+They are recorded in `config/assets.yaml`, not deleted from it. An asset removed from
+the file vanishes from history too, which is the bias rather than a fix for it.
+
+**A bug the recording surfaced.** A bare `2025-10-15` in YAML parses to a naive
+datetime, and comparing it against this system's timezone-aware clock raises. It now
+normalises to UTC on load, with a test — the right failure, but only if it happens in a
+test rather than in a backtest six months from now.
+
+---

@@ -434,6 +434,32 @@ class TestHistoricalUniverse:
         assert gap.bias_fraction == 0.0
         assert universe.delisted() == ()
 
+    def test_the_configured_universe_carries_its_delistings(self, settings) -> None:
+        """The path that should be used in anger, exercised against real config.
+
+        ``from_symbols`` assumes continuous listing, which is the assumption that
+        produces the bias; ``from_config`` reads the recorded dates instead.
+        """
+        universe = HistoricalUniverse.from_config(settings.universe)
+        assert universe.listings
+        for entry in universe.delisted():
+            assert entry.delisted_at is not None
+            assert entry.reason, f"{entry.symbol} was delisted without a recorded reason"
+
+    def test_a_delisted_asset_leaves_the_active_symbol_list(self, settings) -> None:
+        """Polling something that no longer trades earns an empty response every cycle."""
+        config = settings.universe
+        listed = set(config.symbols())
+        for entry in config.delisted():
+            assert entry.symbol not in listed
+            assert entry.symbol in config.symbols(include_delisted=True)
+
+    def test_a_delisted_date_is_timezone_aware(self, settings) -> None:
+        """A bare YYYY-MM-DD in YAML parses naive and raises on the first comparison."""
+        for entry in settings.universe.assets:
+            if entry.delisted_at is not None:
+                assert entry.delisted_at.tzinfo is not None
+
     def test_adding_a_symbol_twice_replaces_rather_than_duplicates(self) -> None:
         universe = HistoricalUniverse.from_symbols(["BTC"])
         universe.add(AssetListing(symbol="BTC", delisted_at=FIXED_NOW))

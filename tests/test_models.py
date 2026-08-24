@@ -264,6 +264,76 @@ class TestNoLookAhead:
 # -------------------------------------------------------------------- models
 
 
+class TestContextSlicing:
+    """The bisect cuts must equal the scans they replaced, exactly.
+
+    Phase 12 replaced a per-context linear scan of every auxiliary series with a
+    bisect on a pre-sorted key. That is a pure performance change and must be a
+    no-op on results, so it is checked against the definition rather than assumed.
+    """
+
+    @staticmethod
+    def _source():
+        prices = drifting(600)
+        bars = candles(prices)
+        history = [
+            (bar.open_time, {"close": bar.close, "ema_21": bar.close, "sma_200": bar.close})
+            for bar in bars
+        ]
+        peers = {"ETH": candles(drifting(600), asset="ETH")}
+        funding = [(HOUR.close_time(b.open_time), 0.01) for b in bars[::3]]
+        return ContextSource("BTC", HOUR, bars, history, peers=peers, funding=funding)
+
+    def test_every_cut_matches_a_linear_scan(self) -> None:
+        source = self._source()
+        for index in (1, 50, 199, 400, len(source.candles) - 20):
+            context = source.context_at(index, HORIZON)
+            assert context is not None
+            as_of = context.as_of
+
+            expected_features = [
+                (moment, values)
+                for moment, values in source.feature_history
+                if HOUR.close_time(moment) <= as_of
+            ]
+            assert context.feature_history == expected_features
+
+            for name, series in source.peers.items():
+                expected_peer = [c for c in series if HOUR.close_time(c.open_time) <= as_of]
+                assert context.peers[name] == expected_peer
+
+            assert context.funding == [(t, v) for t, v in source.funding if t <= as_of]
+
+    def test_nothing_after_the_prediction_instant_survives_the_cut(self) -> None:
+        source = self._source()
+        context = source.context_at(300, HORIZON)
+        assert context is not None
+        assert all(HOUR.close_time(m) <= context.as_of for m, _ in context.feature_history)
+        for series in context.peers.values():
+            assert all(HOUR.close_time(c.open_time) <= context.as_of for c in series)
+        assert all(t <= context.as_of for t, _ in context.funding)
+
+    def test_unsorted_news_is_ordered_before_it_is_bisected(self) -> None:
+        """Bisecting an unsorted list returns the wrong slice silently."""
+        from datetime import timedelta as _td
+
+        class _Item:
+            def __init__(self, when):
+                self.published_at = when
+
+        base = FIXED_NOW - _td(days=40)
+        shuffled = [_Item(base + _td(hours=h)) for h in (500, 10, 900, 200, 1)]
+        source = ContextSource("BTC", HOUR, candles(drifting(600)), news=shuffled)
+        times = [item.published_at for item in source.news]
+        assert times == sorted(times)
+
+        context = source.context_at(300, HORIZON)
+        assert context is not None
+        assert all(item.published_at <= context.as_of for item in context.news)
+        expected = sum(1 for item in shuffled if item.published_at <= context.as_of)
+        assert len(context.news) == expected
+
+
 class TestModelBehaviour:
     def test_every_model_abstains_without_its_substrate(self) -> None:
         """A model with nothing to say must say nothing rather than guess."""
