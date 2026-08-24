@@ -30,6 +30,7 @@ and nothing here contains logic of its own.
     mie serve                         the read-only API and dashboard
     mie alerts                        evaluate the alert rules once
     mie bench                         measure against the declared latency budgets
+    mie have-history                  exit code: is there enough stored history?
 """
 
 from __future__ import annotations
@@ -2091,6 +2092,39 @@ def bench(
             "[dim]Budgets come from what each operation is for, not from what it "
             "currently does. Headroom is the point of a budget.[/dim]"
         )
+
+    asyncio.run(_run())
+
+
+@app.command("have-history")
+def have_history(
+    minimum: int = typer.Option(500, "--minimum", help="Bars required to count as stocked."),
+    timeframe: str = typer.Option("1h", "--timeframe"),
+    source: str = typer.Option("binance", "--source"),
+) -> None:
+    """Exit 0 if enough price history is stored, 1 if not. For scripts.
+
+    Exists because the launcher needs to decide whether to backfill, and every
+    text-parsing version of that check was fragile: quoting broke on a space in the
+    installation path, and `find` resolved to Git Bash's binary rather than the
+    Windows one. An exit code cannot be misparsed.
+    """
+
+    async def _run() -> None:
+        settings = _settings()
+        frame = _tf(timeframe)
+        stocked = 0
+        async with IngestionService(settings) as service, service.db.session() as session:
+            repo = OHLCVRepository(session)
+            for symbol in settings.universe.symbols():
+                rows = await repo.fetch_recent(symbol, frame, source=source, limit=minimum)
+                if len(rows) >= minimum:
+                    stocked += 1
+        console.print(
+            f"{stocked} of {len(settings.universe.symbols())} assets have "
+            f"{minimum}+ bars of {frame} history"
+        )
+        raise typer.Exit(code=0 if stocked else 1)
 
     asyncio.run(_run())
 

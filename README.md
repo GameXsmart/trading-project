@@ -373,6 +373,33 @@ They are recorded in `config/assets.yaml`, not deleted from it.
 
 ---
 
+## Just run it (Windows)
+
+Double-click **`run-engine.bat`**. It creates the virtual environment if missing,
+installs dependencies, prepares the database, backfills history on a first run, and
+opens three windows:
+
+| Window | What it does |
+|---|---|
+| **MIE ingest** | Live polling, funding rates, open interest, quality scoring |
+| **MIE dashboard** | The read-only UI on http://127.0.0.1:8000 |
+| **MIE cycle** | Records predictions hourly, resolves them, reports what was learned |
+
+**`stop-engine.bat`** stops all three. Stored data is untouched, and no prediction
+already recorded can be revised.
+
+**Leave ingest running.** Funding and open interest were empty until the service ran
+for the first time, which means the `orderflow` model had never actually executed — its
+100% abstention rate was a missing input, not a finding about markets. One minute of
+ingest produced 2,450 funding rows and 2,300 open-interest rows. News history also only
+accumulates while it runs; RSS carries about a week, and the impact validator needs 25
+events in a category before it will say anything.
+
+The dashboard takes 30–60 seconds to answer on first load, because it fits calibration
+from every stored prediction before serving. After that it is fast.
+
+---
+
 ## Quick start
 
 Requires Python 3.12+. No database server, no Docker, nothing else.
