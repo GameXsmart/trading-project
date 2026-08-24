@@ -114,7 +114,7 @@ Chosen per workload, not per fashion.
 │   ├── features/      # incremental indicator engine + market structure
 │   ├── state/         # multi-timeframe market state + regime
 │   ├── patterns/      # detectors, validation gate, similarity, sequences
-│   ├── news/          # (Phase 5) news ingestion + impact model
+│   ├── news/          # RSS ingestion, dedup, classification
 │   ├── models/        # (Phase 6) predictors A-H
 │   ├── ensemble/      # (Phase 7) meta-model + calibration
 │   ├── backtest/      # (Phase 8) walk-forward harness
@@ -133,7 +133,7 @@ Entries annotated with a phase are the **target** layout and do not exist yet:
 directories for unbuilt phases are intentionally absent rather than filled with stubs,
 because an empty module pretending to be a model is worse than no module. What is on
 disk today is `core`, `config`, `storage`, `providers`, `ingestion`, `quality`,
-`features`, `state`, `patterns`, plus `config/`, `sql/`, `tests/` and `docs/`.
+`features`, `state`, `patterns`, `news`, plus `config/`, `sql/`, `tests/` and `docs/`.
 
 ---
 
@@ -319,5 +319,5 @@ inputs is not.
 Phases are gated: a phase ships only when the previous one is correct and tested.
 See [`docs/PHASES.md`](docs/PHASES.md) for the gate criteria of each.
 **Phases 1 (ingestion + database), 2 (feature engine) and 3 (multi-timeframe state)
-and 4 (pattern and sequence discovery) are implemented.** Phases 5+ are designed
-above and not yet built.
+and 4 (pattern and sequence discovery) are implemented, and Phase 5 (news) is
+partially implemented.** Phases 6+ are designed above and not yet built.

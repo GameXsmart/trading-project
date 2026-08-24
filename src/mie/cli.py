@@ -19,6 +19,7 @@ and nothing here contains logic of its own.
     mie patterns measure              measure every detector against history
     mie patterns show                 which patterns earned predictive use
     mie similar BTC                   historical analogues of the current state
+    mie news                          deduplicated, classified news feed
 """
 
 from __future__ import annotations
@@ -38,6 +39,7 @@ from mie.core.timeframes import Timeframe, utcnow
 from mie.core.types import IngestStatus
 from mie.features.engine import _row_to_candle
 from mie.ingestion.service import IngestionService
+from mie.news.engine import NewsEngine
 from mie.patterns.evaluation import PatternEvaluator
 from mie.patterns.registry import PatternRegistry
 from mie.patterns.similarity import SimilarityEngine
@@ -915,6 +917,67 @@ def similar(
             "\n[dim]Analogues are historical situations that resembled this one on "
             "scale-free features. Resemblance is not causation, and a distribution "
             "of past outcomes is not a forecast. Not investment advice.[/dim]"
+        )
+
+    asyncio.run(_run())
+
+
+@app.command("news")
+def news(
+    asset: str | None = typer.Option(None, "--asset", help="Filter to one asset."),
+    limit: int = typer.Option(15, "--limit"),
+    min_importance: float = typer.Option(0.0, "--min-importance"),
+) -> None:
+    """Fetch, deduplicate and classify current crypto news.
+
+    One story republished by several outlets is reported once, with its coverage
+    counted - which is the most honest importance signal available before any price
+    data is consulted.
+    """
+
+    async def _run() -> None:
+        _settings()
+        async with NewsEngine() as engine:
+            events = await engine.fetch_events()
+        if not events:
+            console.print("[yellow]no recent news retrieved[/yellow]")
+            return
+
+        selected = NewsEngine.for_asset(events, asset) if asset else events
+        selected = [e for e in selected if e.importance >= min_importance]
+        selected = sorted(selected, key=lambda e: -e.importance)[:limit]
+
+        overall, counted = NewsEngine.market_sentiment(events, asset)
+        label = asset.upper() if asset else "market-wide"
+        tone = "green" if overall > 0.1 else "red" if overall < -0.1 else "dim"
+        console.print(
+            f"\n[bold]{label} news sentiment[/bold] "
+            f"[{tone}]{overall:+.3f}[/{tone}] across {counted} distinct stories "
+            f"({len(events)} total, {sum(1 for e in events if e.coverage > 1)} "
+            f"merged across outlets)\n"
+        )
+
+        table = Table(header_style="bold")
+        for column in ("imp", "cat", "sentiment", "outlets", "assets", "story"):
+            table.add_column(column)
+        for event in selected:
+            colour = (
+                "green" if event.sentiment_score > 0.1
+                else "red" if event.sentiment_score < -0.1
+                else "dim"
+            )
+            table.add_row(
+                f"{event.importance:.2f}",
+                str(event.category)[:14],
+                f"[{colour}]{str(event.sentiment)[:13]}[/{colour}]",
+                str(event.coverage),
+                ",".join(event.assets[:2]) or "-",
+                (("[recycled] " if event.is_recycled else "") + event.title)[:62],
+            )
+        console.print(table)
+        console.print(
+            "\n[dim]Sentiment is a reading of the text, not a forecast of prices. "
+            "Coverage counts distinct outlets. Not investment advice.[/dim]"
         )
 
     asyncio.run(_run())

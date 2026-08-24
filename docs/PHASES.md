@@ -197,22 +197,61 @@ instead of a number tuned to BTC.
 
 ---
 
-## Phase 5 — News and sentiment intelligence
+## Phase 5 — News and sentiment intelligence 🟡 PARTIAL
 
-**Build**: news ingestion, deduplication (including recycled/reposted stories), asset
-relevance, event categorisation, importance estimation, and the event-impact model.
+**Delivered**
 
-**Design constraints**
+- Seven public RSS feeds, all keyless and verified reachable — no scraping, no
+  free-tier credentials to expire.
+- Stdlib RSS/Atom parsing; a feed that fails to parse is skipped with a warning rather
+  than taking the fetch down.
+- IDF-weighted deduplication merging one story across outlets, plus recycled-story
+  detection keyed on content-derived stable cluster ids.
+- Classification: asset relevance (title-weighted, ambiguous tickers excluded), event
+  category, negation-aware lexicon sentiment, coverage-driven importance, and a
+  separate confidence score.
+- CLI: `mie news`.
 
-- Social posts are *signals about sentiment*, never facts about the world.
-- Deduplication is mandatory: the same story republished by twelve outlets is one
-  event with wider coverage, not twelve events.
-- Every event carries source, timestamp, relevance, category, sentiment, estimated
-  importance, and confidence.
+**Still to build:** the event-impact model of requirement §9 — magnitude, direction,
+affected assets and duration, **validated against realised post-event volatility
+rather than asserted**. That validation is the harder half of this gate and is
+deliberately not claimed yet.
 
-**Gate**
-- Recycled-news detection is measured on a labelled set (target: >90% recall).
-- Impact estimates are validated against realised post-event volatility, not asserted.
+**Gate: partially met.** Deduplication works on live data — four correct cross-outlet
+merges from 129 articles with no false merges. Impact validation is outstanding.
+
+**Design decisions worth carrying forward**
+
+- **Rules, not a fitted model.** There are no labels for "category" or "market
+  sentiment". Having an LLM label headlines and training on those labels produces a
+  model that imitates the labeller, errors included, while making them unauditable.
+  A transparent rule set an operator can read and correct is worth more here, and
+  Phases 6–9 will measure whether the signal has any value at all.
+- **Coverage is the importance signal.** How many independent outlets ran a story is
+  real evidence about its significance, gathered before any price data is consulted.
+- **Sentiment is not impact.** Sentiment describes the text; impact is a claim about
+  prices and has to be measured against them.
+
+**Three bugs this phase surfaced, all found by measuring rather than reasoning.**
+
+1. **Bigram shingles were the wrong representation.** Outlets rewrite headlines rather
+   than republishing them, so bigram overlap collapses even for unmistakably identical
+   stories: two articles on the same Ray Dalio statement scored 0.167 against a 0.55
+   threshold, and 129 live articles produced *zero* merges. IDF-weighted token overlap
+   scores that pair at 0.384; the threshold was then calibrated against hand-marked
+   cross-outlet pairs, settling at 0.30 where every merge is correct.
+2. **Document-frequency cutoffs do not survive corpus size, at either end.** A hard
+   "ignore tokens above 30% DF" rule zeroed the shared rare token identifying a story
+   whenever the batch was small — in six headlines, a token in two is already 33%.
+   Pure IDF has the mirror cliff: a token in *every* document weighs exactly zero, so
+   two identical headlines in a two-article batch scored zero similarity. A weight
+   floor fixes both, degrading gracefully into plain Jaccard when IDF has nothing to
+   say.
+3. **Filtering by age before clustering splits stories.** Coverage straddling the
+   cutoff was broken apart — one outlet at 84 hours, its pair at 71 — turning three
+   merged stories into six single-outlet ones and destroying the coverage count
+   deduplication exists to produce. Clustering now runs first, and the age test is
+   applied to the story using its most recent coverage.
 
 ---
 
