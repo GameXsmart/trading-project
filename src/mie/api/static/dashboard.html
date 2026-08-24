@@ -1,0 +1,421 @@
+<!doctype html>
+<html lang="en" data-theme="dark">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Market Intelligence Engine</title>
+<style>
+  :root {
+    --bg: #0b0d10; --panel: #14181d; --panel-2: #1a1f26; --line: #262d36;
+    --text: #e6e9ee; --dim: #8b95a3; --faint: #5b6674;
+    --up: #35c37d; --down: #e5534b; --flat: #7b8794;
+    --warn: #d99a2b; --accent: #5b9dd9;
+    --mono: ui-monospace, "SF Mono", "Cascadia Mono", Menlo, Consolas, monospace;
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0; background: var(--bg); color: var(--text);
+    font: 14px/1.5 system-ui, -apple-system, "Segoe UI", sans-serif;
+  }
+  header {
+    display: flex; align-items: baseline; gap: 16px; flex-wrap: wrap;
+    padding: 14px 20px; border-bottom: 1px solid var(--line); background: var(--panel);
+    position: sticky; top: 0; z-index: 5;
+  }
+  header h1 { font-size: 15px; margin: 0; font-weight: 600; letter-spacing: .2px; }
+  .badge {
+    font: 11px/1 var(--mono); padding: 4px 8px; border-radius: 999px;
+    border: 1px solid var(--line); color: var(--dim); text-transform: uppercase;
+    letter-spacing: .6px;
+  }
+  .badge.no-trade { border-color: #3a2a2a; color: #d98b8b; background: #1d1414; }
+  .badge.live { border-color: #244232; color: var(--up); }
+  main { padding: 20px; display: grid; gap: 16px; grid-template-columns: repeat(12, 1fr); }
+  .panel {
+    background: var(--panel); border: 1px solid var(--line); border-radius: 10px;
+    padding: 14px 16px; min-width: 0;
+  }
+  .panel h2 {
+    font-size: 11px; text-transform: uppercase; letter-spacing: .8px;
+    color: var(--dim); margin: 0 0 12px; font-weight: 600;
+  }
+  .span-12 { grid-column: span 12; } .span-8 { grid-column: span 8; }
+  .span-6 { grid-column: span 6; } .span-4 { grid-column: span 4; }
+  @media (max-width: 1100px) { .span-8, .span-6, .span-4 { grid-column: span 12; } }
+  table { width: 100%; border-collapse: collapse; font: 12px/1.6 var(--mono); }
+  th { text-align: left; color: var(--faint); font-weight: 500; padding: 4px 8px 4px 0;
+       border-bottom: 1px solid var(--line); text-transform: uppercase; font-size: 10px;
+       letter-spacing: .5px; }
+  td { padding: 5px 8px 5px 0; border-bottom: 1px solid #1b2027; white-space: nowrap; }
+  tr:last-child td { border-bottom: none; }
+  .up { color: var(--up); } .down { color: var(--down); } .flat { color: var(--flat); }
+  .dim { color: var(--dim); } .faint { color: var(--faint); }
+  .mono { font-family: var(--mono); }
+
+  /* --- The display gate, expressed in CSS ------------------------------ */
+  /* A directional call is rendered by .call, which uses a grid with named rows for
+     direction, probabilities, confidence and invalidation. All four are required
+     children; there is no variant of this component that omits any of them. */
+  .call { display: grid; gap: 10px; }
+  .call .dir { font-size: 26px; font-weight: 650; letter-spacing: .5px; }
+  .call .not-guaranteed {
+    font: 10px/1 var(--mono); color: var(--warn); border: 1px solid #3a2f16;
+    background: #1d1811; padding: 4px 7px; border-radius: 5px; display: inline-block;
+    text-transform: uppercase; letter-spacing: .6px;
+  }
+  .bars { display: grid; gap: 4px; }
+  .bar-row { display: grid; grid-template-columns: 44px 1fr 46px; align-items: center; gap: 8px;
+             font: 11px/1 var(--mono); }
+  .bar { height: 8px; background: var(--panel-2); border-radius: 3px; overflow: hidden; }
+  .bar > i { display: block; height: 100%; border-radius: 3px; }
+  .conf-wrap { border-top: 1px solid var(--line); padding-top: 10px; }
+  .factors { display: grid; grid-template-columns: repeat(auto-fit, minmax(96px, 1fr)); gap: 6px; }
+  .factor { background: var(--panel-2); border-radius: 6px; padding: 6px 8px; }
+  .factor b { display: block; font: 13px/1.3 var(--mono); }
+  .factor span { font-size: 10px; color: var(--faint); text-transform: uppercase; letter-spacing: .5px; }
+  .factor.limiting { outline: 1px solid var(--warn); }
+  .invalidation { border-top: 1px solid var(--line); padding-top: 10px; }
+  .invalidation li { color: var(--dim); font-size: 12px; margin-bottom: 3px; }
+
+  /* --- Insufficient evidence: a first-class state, never a blank ------- */
+  .insufficient { display: grid; gap: 10px; }
+  .insufficient .headline {
+    font-size: 17px; font-weight: 600; color: var(--warn);
+    display: flex; align-items: center; gap: 9px;
+  }
+  .insufficient ul { margin: 0; padding-left: 18px; }
+  .insufficient li { color: var(--dim); font-size: 12px; margin-bottom: 4px; }
+
+  .gate-row { display: grid; grid-template-columns: 52px 1fr; gap: 8px; font: 11px/1.5 var(--mono);
+              padding: 3px 0; border-bottom: 1px solid #1b2027; }
+  .gate-row:last-child { border-bottom: none; }
+  .pass { color: var(--up); } .fail { color: var(--down); }
+  select, button {
+    background: var(--panel-2); color: var(--text); border: 1px solid var(--line);
+    border-radius: 6px; padding: 5px 9px; font: 12px var(--mono); cursor: pointer;
+  }
+  .matrix td, .matrix th { text-align: center; padding: 3px 5px; font-size: 11px; }
+  .note { color: var(--faint); font-size: 11px; margin-top: 10px; line-height: 1.6; }
+  footer { padding: 18px 20px 40px; color: var(--faint); font-size: 11px; border-top: 1px solid var(--line); }
+  .loading { color: var(--faint); font: 12px var(--mono); }
+</style>
+</head>
+<body>
+<header>
+  <h1>Crypto Market Intelligence Engine</h1>
+  <span class="badge no-trade">analysis only &middot; never executes trades</span>
+  <span class="badge live" id="conn">connecting</span>
+  <span style="flex:1"></span>
+  <select id="asset"></select>
+  <select id="horizon">
+    <option value="6">6 bars</option>
+    <option value="12" selected>12 bars</option>
+    <option value="24">24 bars</option>
+    <option value="48">48 bars</option>
+  </select>
+  <button id="refresh">refresh</button>
+</header>
+
+<main>
+  <section class="panel span-12" id="status-panel">
+    <h2>System</h2>
+    <div class="loading">loading…</div>
+  </section>
+
+  <section class="panel span-6" id="prediction-panel">
+    <h2>Current assessment</h2>
+    <div class="loading">loading…</div>
+  </section>
+
+  <section class="panel span-6" id="gate-panel">
+    <h2>Super-prediction gate</h2>
+    <div class="loading">loading…</div>
+  </section>
+
+  <section class="panel span-8" id="assets-panel">
+    <h2>Assets</h2>
+    <div class="loading">loading…</div>
+  </section>
+
+  <section class="panel span-4" id="state-panel">
+    <h2>Multi-timeframe state</h2>
+    <div class="loading">loading…</div>
+  </section>
+
+  <section class="panel span-6" id="models-panel">
+    <h2>Model performance</h2>
+    <div class="loading">loading…</div>
+  </section>
+
+  <section class="panel span-6" id="calibration-panel">
+    <h2>Calibration</h2>
+    <div class="loading">loading…</div>
+  </section>
+
+  <section class="panel span-6" id="correlation-panel">
+    <h2>Correlation</h2>
+    <div class="loading">loading…</div>
+  </section>
+
+  <section class="panel span-6" id="news-panel">
+    <h2>News</h2>
+    <div class="loading">loading…</div>
+  </section>
+</main>
+
+<footer>
+  Probabilistic assessments with explicit uncertainty. Not investment advice, and never
+  a guarantee. No screen in this interface renders a direction without its confidence
+  and its invalidation conditions in the same view &mdash; the API cannot express one
+  without the other.
+</footer>
+
+<script>
+const $ = (id) => document.getElementById(id);
+const pct = (x) => (x * 100).toFixed(0) + "%";
+const esc = (s) => String(s ?? "").replace(/[&<>"']/g, c =>
+  ({ "&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;" }[c]));
+
+async function get(path) {
+  const res = await fetch(path);
+  if (!res.ok) throw new Error((await res.json().catch(() => ({}))).detail || res.statusText);
+  return res.json();
+}
+
+function panel(id, html) { $(id).innerHTML = $(id).querySelector("h2").outerHTML + html; }
+function fail(id, err) { panel(id, `<div class="loading">unavailable — ${esc(err.message)}</div>`); }
+
+/* ------------------------------------------------------------------ prediction
+   renderCall is the ONLY function that draws a direction, and it emits the
+   direction, the probabilities, the confidence breakdown and the invalidation
+   conditions as one block. There is no code path that renders a subset. */
+function renderCall(c) {
+  const cls = c.direction === "up" ? "up" : c.direction === "down" ? "down" : "flat";
+  const rows = [["up", c.probability_up, "var(--up)"],
+                ["flat", c.probability_flat, "var(--flat)"],
+                ["down", c.probability_down, "var(--down)"]];
+  const b = c.confidence_breakdown;
+  const factors = [["skill", b.skill], ["calibration", b.calibration], ["agreement", b.agreement],
+                   ["data quality", b.data_quality], ["sample", b.sample],
+                   ["regime", b.regime_familiarity]];
+  return `<div class="call">
+    <div>
+      <span class="dir ${cls}">${esc(c.direction.toUpperCase())}</span>
+      <span class="dim mono"> ${esc(c.asset)} · ${esc(c.horizon)} · ${esc(c.regime)}</span>
+      ${c.is_super_prediction ? '<span class="badge live">super prediction</span>' : ""}
+    </div>
+    <div><span class="not-guaranteed">probabilistic scenario — not a guaranteed outcome</span></div>
+    <div class="bars">${rows.map(([k, v, col]) => `
+      <div class="bar-row"><span class="dim">${k}</span>
+        <span class="bar"><i style="width:${(v*100).toFixed(1)}%;background:${col}"></i></span>
+        <span>${pct(v)}</span></div>`).join("")}</div>
+    <div class="conf-wrap">
+      <div style="margin-bottom:8px"><b class="mono">confidence ${pct(c.confidence)}</b>
+        <span class="faint"> — limited by ${esc(b.limiting_factor)}</span></div>
+      <div class="factors">${factors.map(([k, v]) => `
+        <div class="factor ${k.replace(" ","_") === b.limiting_factor ? "limiting" : ""}">
+          <b>${v.toFixed(2)}</b><span>${k}</span></div>`).join("")}</div>
+    </div>
+    <div class="invalidation">
+      <div class="dim" style="font-size:11px;text-transform:uppercase;letter-spacing:.6px;margin-bottom:5px">
+        Invalidated if</div>
+      <ul style="margin:0;padding-left:18px">${c.invalidation.map(i => `<li>${esc(i)}</li>`).join("")}</ul>
+    </div>
+  </div>`;
+}
+
+function renderInsufficient(c) {
+  const b = c.confidence;
+  return `<div class="insufficient">
+    <div class="headline">Insufficient evidence
+      <span class="dim mono" style="font-size:12px;font-weight:400">
+        ${esc(c.asset)} · ${esc(c.horizon)} · ${esc(c.regime)}</span></div>
+    <div class="dim" style="font-size:12px">The system has no directional call to publish.
+      This is a measured result, not a failure to load.</div>
+    <ul>${c.reasons.map(r => `<li>${esc(r)}</li>`).join("")}</ul>
+    ${c.panel_summary ? `<div class="faint mono" style="font-size:11px">panel: ${esc(c.panel_summary)}</div>` : ""}
+    ${b ? `<div class="conf-wrap"><div class="factors">
+      ${[["skill", b.skill], ["calibration", b.calibration], ["agreement", b.agreement],
+         ["data quality", b.data_quality], ["sample", b.sample], ["regime", b.regime_familiarity]]
+        .map(([k, v]) => `<div class="factor"><b>${v.toFixed(2)}</b><span>${k}</span></div>`).join("")}
+      </div><div class="note">Confidence would be ${pct(b.value)}, limited by ${esc(b.limiting_factor)}.</div></div>` : ""}
+  </div>`;
+}
+
+function renderPrediction(c) {
+  return c.kind === "directional_call" ? renderCall(c) : renderInsufficient(c);
+}
+
+/* ---------------------------------------------------------------------- panels */
+async function loadStatus() {
+  try {
+    const s = await get("/api/status");
+    panel("status-panel", `<table><tr>
+      <td class="dim">assets</td><td>${s.assets_tracked}</td>
+      <td class="dim">bars</td><td>${s.bars_stored.toLocaleString()}</td>
+      <td class="dim">predictions</td><td>${s.predictions_recorded.toLocaleString()}</td>
+      <td class="dim">resolved</td><td>${s.outcomes_resolved.toLocaleString()}</td>
+      <td class="dim">models with weight</td>
+      <td class="${s.models_with_weight ? "up" : "down"}">${s.models_with_weight}</td>
+      </tr></table>
+      <div class="note">${esc(s.headline)}</div>`);
+  } catch (e) { fail("status-panel", e); }
+}
+
+async function loadPrediction() {
+  const a = $("asset").value, h = $("horizon").value;
+  try {
+    panel("prediction-panel", renderPrediction(await get(`/api/prediction/${a}?horizon=${h}`)));
+  } catch (e) { fail("prediction-panel", e); }
+  try {
+    const g = await get(`/api/gate/${a}?horizon=${h}`);
+    const passed = g.filter(c => c.passed).length;
+    panel("gate-panel", g.map(c => `<div class="gate-row">
+      <span class="${c.passed ? "pass" : "fail"}">${c.passed ? "PASS" : "FAIL"}</span>
+      <span><b>${esc(c.name)}</b> <span class="faint">${esc(c.detail)}</span></span></div>`).join("")
+      + `<div class="note">${passed} of ${g.length} conditions met. Every condition is a veto:
+         the strongest claim the system makes requires the strongest evidence on every axis.</div>`);
+  } catch (e) { fail("gate-panel", e); }
+}
+
+async function loadAssets() {
+  try {
+    const rows = await get("/api/assets");
+    panel("assets-panel", `<table>
+      <tr><th>asset</th><th>price</th><th>24h</th><th>vol/bar</th><th>quality</th><th>bars</th></tr>
+      ${rows.map(r => `<tr>
+        <td><b>${esc(r.asset)}</b></td>
+        <td>${r.price ? r.price.toLocaleString(undefined, {maximumFractionDigits: 4}) : "—"}</td>
+        <td class="${r.change_24h_pct > 0 ? "up" : r.change_24h_pct < 0 ? "down" : "flat"}">
+          ${r.bars_stored ? r.change_24h_pct.toFixed(2) + "%" : "—"}</td>
+        <td class="dim">${r.bars_stored ? r.volatility_pct.toFixed(3) + "%" : "—"}</td>
+        <td class="${r.data_quality < 0.8 ? "down" : "dim"}">${r.data_quality.toFixed(2)}</td>
+        <td class="faint">${r.bars_stored.toLocaleString()}</td></tr>`).join("")}</table>`);
+  } catch (e) { fail("assets-panel", e); }
+}
+
+async function loadState() {
+  try {
+    const s = await get(`/api/state/${$("asset").value}`);
+    panel("state-panel", `<table>
+      <tr><th>tf</th><th>direction</th><th>strength</th><th>conf</th></tr>
+      ${s.timeframes.map(t => `<tr><td>${esc(t.timeframe)}</td>
+        <td class="${/bull|up/i.test(t.direction) ? "up" : /bear|down/i.test(t.direction) ? "down" : "flat"}">
+          ${esc(t.direction)}</td>
+        <td class="dim">${t.strength.toFixed(2)}</td>
+        <td class="dim">${t.confidence.toFixed(2)}</td></tr>`).join("")}</table>
+      <div class="note">alignment <b>${esc(s.alignment)}</b> · regime <b>${esc(s.regime)}</b>
+        · agreement ${s.agreement.toFixed(2)}
+        ${s.conflict ? `<br><span class="down">conflict: ${esc(s.conflict)}</span>` : ""}</div>`);
+  } catch (e) { fail("state-panel", e); }
+}
+
+async function loadModels() {
+  try {
+    const rows = await get("/api/models?dimension=overall");
+    if (!rows.length) return panel("models-panel",
+      `<div class="loading">no resolved outcomes yet — run <span class="mono">mie predict</span>
+       then <span class="mono">mie learn</span></div>`);
+    rows.sort((a, b) => a.brier - b.brier);
+    panel("models-panel", `<table>
+      <tr><th>model</th><th>n</th><th>brier</th><th>acc</th><th>weight</th><th></th></tr>
+      ${rows.map(r => {
+        const beats = r.brier < r.uniform_brier - 1e-9;
+        const same = Math.abs(r.brier - r.uniform_brier) < 1e-4;
+        return `<tr><td>${esc(r.model_id)}</td>
+          <td class="faint">${r.outcomes}</td>
+          <td class="${beats ? "up" : "down"}">${r.brier.toFixed(4)}</td>
+          <td class="dim">${pct(r.accuracy)}</td>
+          <td class="${r.weight > 0 ? "up" : "faint"}">${r.weight.toFixed(4)}</td>
+          <td class="faint">${same ? "= saying nothing" : beats ? "" : "worse than uniform"}</td></tr>`;
+      }).join("")}</table>
+      <div class="note">0.6667 is the Brier score of a uniform distribution. A model at that
+      number has done exactly as well as declining to forecast.</div>`);
+  } catch (e) { fail("models-panel", e); }
+}
+
+async function loadCalibration() {
+  try {
+    const bins = await get("/api/calibration");
+    if (!bins.length) return panel("calibration-panel",
+      `<div class="loading">no resolved outcomes yet</div>`);
+    panel("calibration-panel", `<table>
+      <tr><th>stated</th><th>n</th><th>observed</th><th>95% interval</th><th></th></tr>
+      ${bins.map(b => `<tr>
+        <td>${b.stated.toFixed(3)}</td><td class="faint">${b.count}</td>
+        <td>${b.observed.toFixed(3)}</td>
+        <td class="dim">[${b.interval_low.toFixed(3)}, ${b.interval_high.toFixed(3)}]</td>
+        <td class="${b.consistent ? "up" : "down"}">${b.consistent ? "consistent" : "off"}</td>
+        </tr>`).join("")}</table>
+      <div class="note">"Consistent" asks whether the stated probability falls inside the observed
+      frequency's confidence interval — not whether it is within some fixed distance, which at
+      small counts mostly measures how many observations landed in the bin.</div>`);
+  } catch (e) { fail("calibration-panel", e); }
+}
+
+async function loadCorrelation() {
+  try {
+    const c = await get("/api/correlation");
+    if (!c.assets.length) return panel("correlation-panel", `<div class="loading">no series stored</div>`);
+    const cell = (v) => {
+      const a = Math.min(1, Math.abs(v));
+      const col = v >= 0 ? `rgba(53,195,125,${a * .55})` : `rgba(229,83,75,${a * .55})`;
+      return `<td style="background:${col}">${v.toFixed(2)}</td>`;
+    };
+    panel("correlation-panel", `<table class="matrix">
+      <tr><th></th>${c.assets.map(a => `<th>${esc(a)}</th>`).join("")}</tr>
+      ${c.matrix.map((row, i) => `<tr><th>${esc(c.assets[i])}</th>${row.map(cell).join("")}</tr>`).join("")}
+      </table><div class="note">Pearson correlation of per-bar returns over the last ${c.window} bars.</div>`);
+  } catch (e) { fail("correlation-panel", e); }
+}
+
+async function loadNews() {
+  try {
+    const items = await get("/api/news?limit=12");
+    if (!items.length) return panel("news-panel",
+      `<div class="loading">no stored news — run <span class="mono">mie news</span></div>`);
+    panel("news-panel", items.map(n => `<div style="padding:6px 0;border-bottom:1px solid #1b2027">
+      <div style="font-size:12px">${esc(n.title)}</div>
+      <div class="faint mono" style="font-size:10px">
+        ${new Date(n.published_at).toISOString().slice(0, 16).replace("T", " ")} ·
+        ${esc(n.category)} · ${esc(n.sentiment)} · ${n.coverage} source(s)
+        ${n.assets.length ? " · " + n.assets.map(esc).join(", ") : ""}</div></div>`).join(""));
+  } catch (e) { fail("news-panel", e); }
+}
+
+/* ---------------------------------------------------------------------- boot */
+async function boot() {
+  try {
+    const rows = await get("/api/assets");
+    $("asset").innerHTML = rows.map(r =>
+      `<option value="${esc(r.asset)}"${r.asset === "BTC" ? " selected" : ""}>${esc(r.asset)}</option>`).join("");
+  } catch { $("asset").innerHTML = '<option value="BTC">BTC</option>'; }
+  refreshAll();
+  connect();
+}
+
+function refreshAll() {
+  loadStatus(); loadPrediction(); loadAssets(); loadState();
+  loadModels(); loadCalibration(); loadCorrelation(); loadNews();
+}
+
+function connect() {
+  const proto = location.protocol === "https:" ? "wss" : "ws";
+  let socket;
+  try { socket = new WebSocket(`${proto}://${location.host}/ws?asset=${$("asset").value}`); }
+  catch { $("conn").textContent = "offline"; return; }
+  socket.onopen = () => { $("conn").textContent = "live"; };
+  socket.onclose = () => { $("conn").textContent = "offline"; setTimeout(connect, 10000); };
+  socket.onmessage = (e) => {
+    const msg = JSON.parse(e.data);
+    if (msg.prediction) panel("prediction-panel", renderPrediction(msg.prediction));
+  };
+}
+
+$("refresh").onclick = refreshAll;
+$("asset").onchange = () => { loadPrediction(); loadState(); };
+$("horizon").onchange = loadPrediction;
+boot();
+</script>
+</body>
+</html>

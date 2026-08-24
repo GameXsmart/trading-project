@@ -693,22 +693,88 @@ pending.
 
 ---
 
-## Phase 10 — API and dashboard
+## Phase 10 — API and dashboard ✅ COMPLETE (result: the interface mostly says "insufficient evidence")
 
-**Build**: FastAPI + WebSocket, and the Next.js dark-mode dashboard — market state,
-per-asset panels, correlation matrix, prediction timeline, news feed, regime
-indicator, model performance, calibration, super predictions, and the "Why?" panel.
+**Delivered**
 
-**Design constraints**
+- **A FastAPI service** (`api/app.py`) with status, assets, prediction, gate, state,
+  model performance, calibration, quality, news, correlation, and a WebSocket that
+  pushes the current assessment on an interval.
+- **The display gate enforced in the type system** (`api/schemas.py`) rather than in a
+  template. See below.
+- **A dark-mode dashboard** served by the API itself, with every panel the phase
+  specifies: system status, current assessment, super-prediction gate, asset grid,
+  multi-timeframe state, model performance, calibration, correlation matrix, news feed.
+- CLI: `mie serve`.
 
-- The UI must render probability, confidence, and invalidation conditions **together**.
-  A number without its uncertainty is a lie of omission.
-- Predictions and guarantees must be visually unmistakable from each other.
-- "Insufficient evidence" is a first-class display state, not an error.
+**Gate: met, and met structurally.**
 
-**Gate**
-- No screen can display a directional call without its confidence and invalidation
-  conditions visible in the same view.
+> *No screen can display a directional call without its confidence and invalidation
+> conditions visible in the same view.*
+
+Enforced in CSS or a template, that is a convention — one refactor from being false. So
+it lives in the contract instead. A prediction endpoint can return exactly two shapes:
+
+* `DirectionalCall` — **cannot be constructed** without a non-zero confidence, a
+  confidence decomposition that equals the published confidence, and at least one
+  non-blank invalidation condition. A caller that tries gets a `ValidationError`.
+* `InsufficientEvidence` — carries no direction and no probabilities at all, and
+  requires at least one reason. It cannot be misread as a weak directional call because
+  there is nothing directional in it.
+
+They are a discriminated union, so there is no third shape carrying a direction "with
+caveats" — a caveated direction still reaches a reader as a direction. **The UI cannot
+violate the gate because the API cannot express a violation.** The tests are mostly
+attempts to violate it: empty invalidation, whitespace-only invalidation, confidence
+below the publication floor, a confidence that disagrees with its own breakdown,
+probabilities that do not sum to one. Each must raise.
+
+Every directional payload also carries `is_guaranteed: false` as a literal field —
+present rather than absent, because §21 requires prediction and guarantee to be
+unmistakable and a field that is always there is harder to overlook than one that is
+missing.
+
+**The safety boundary is asserted, not assumed.** §21 is a claim about *absence*, which
+is the kind of claim that quietly stops being true. Two tests check it directly: no
+route accepts POST, PUT, PATCH or DELETE, and no route path contains `order`, `trade`,
+`execute`, `buy`, `sell`, `withdraw` or `position`. The WebSocket is push-only.
+
+**Verified running against the live database**, not just in tests:
+
+| Endpoint | Result |
+|---|---|
+| `/api/status` | 10 assets, 26,529 bars, 8,100 predictions, 8,100 resolved, **0 models with weight** |
+| `/api/prediction/BTC` | `insufficient_evidence`, with five specific reasons and the full confidence decomposition |
+| `/api/models` | the nine forecasters ranked, three of them at exactly 0.6667 |
+| dashboard | all nine panels populated, WebSocket `live`, zero console errors |
+
+The dashboard's assessment panel reads *"Insufficient evidence — the system has no
+directional call to publish. This is a measured result, not a failure to load."* That
+sentence is the whole point of the phase. An empty panel is ambiguous between loading,
+broken, and having nothing to say, and only the third is true here.
+
+Because live data can never exercise the directional branch, it was verified by
+injecting a synthetic call into the renderer in a real browser: direction, three
+probability bars, the confidence figure, six factor tiles with the limiting factor
+highlighted, and two invalidation conditions — all in one view, with the
+"probabilistic scenario — not a guaranteed outcome" badge.
+
+**A bug caught by looking at the output rather than the tests.** The first live run
+returned a prediction dated `2025-10-09` and presented it as current. `OHLCVRepository.fetch`
+with a limit returns the *earliest* rows; `fetch_recent` exists precisely for this, and
+its own docstring warns about the trap. I used the wrong one in three places — the
+prediction context, the asset grid's prices, and the correlation window — so the
+dashboard would have shown ten-month-old prices as live. Two regression tests now pin
+the freshness of both the prediction instant and the quoted price.
+
+**A deliberate deviation: the dashboard is not Next.js.** The phase specifies one. What
+shipped is a single self-contained page served by the API, with no build step and no
+Node dependency. The reason is deliverability: a Next.js app would need its own
+toolchain, install, build and runtime to be verified, and an interface I cannot load
+and inspect is not delivered work. The gate is framework-independent — it lives in the
+API contract — so the substance is unaffected, but the deviation is real and is
+recorded here rather than glossed over. Porting the same panels to Next.js later
+changes nothing about what the API will emit.
 
 ---
 

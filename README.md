@@ -10,7 +10,8 @@ produces **probabilistic, uncertainty-bearing** assessments of market state.
 **Status: Phases 1 (ingestion + database), 2 (feature engine), 3 (multi-timeframe
 market state), 4 (pattern and sequence discovery), 5 (news intelligence), 6
 (prediction models), 7 (ensemble, calibration, confidence), 8 (walk-forward
-backtesting) and 9 (self-evaluation and learning) are complete and tested.**
+backtesting), 9 (self-evaluation and learning) and 10 (API and dashboard) are complete
+and tested.**
 
 **The headline result: none of the eight models beats a climatology baseline, so the
 ensemble publishes nothing.** See
@@ -237,6 +238,49 @@ entire run, +0.2558, rests on two observations. The gate rejects all of them.
 
 ---
 
+## What Phase 10 delivers — an interface that cannot overstate itself
+
+The gate reads: *no screen can display a directional call without its confidence and
+invalidation conditions visible in the same view.* Enforced in a template that is a
+convention. So it lives in the API contract instead.
+
+A prediction endpoint returns exactly two shapes:
+
+- **`DirectionalCall`** — cannot be constructed without a non-zero confidence, a
+  decomposition that equals it, and at least one non-blank invalidation condition.
+- **`InsufficientEvidence`** — no direction, no probabilities at all, and at least one
+  reason required.
+
+There is no third shape carrying a direction "with caveats", because a caveated
+direction still reaches a reader as a direction. **The UI cannot violate the gate
+because the API cannot express a violation.** Most of the tests are attempts to
+violate it — empty invalidation, whitespace invalidation, confidence below the
+publication floor, a confidence that disagrees with its own breakdown — and each must
+raise.
+
+The **safety boundary is asserted, not assumed**: no route accepts POST/PUT/PATCH/
+DELETE, and no route path contains `order`, `trade`, `execute`, `buy`, `sell`,
+`withdraw` or `position`. §21 is a claim about absence, and absence is exactly what
+stops being true quietly.
+
+```bash
+mie serve
+```
+
+Verified running against the live database: 10 assets, 26,529 bars, 8,100 resolved
+predictions, **0 models with weight** — and the assessment panel reads *"Insufficient
+evidence — the system has no directional call to publish. This is a measured result,
+not a failure to load."* An empty panel would be ambiguous between loading, broken and
+having nothing to say. Only the third is true.
+
+**One deviation, stated plainly:** the dashboard is a single self-contained page served
+by the API, not the Next.js app the plan specifies. An interface that cannot be loaded
+and inspected is not delivered work, and a Next.js build adds a toolchain this repo
+cannot verify end to end. The gate is framework-independent, so the substance is
+unaffected.
+
+---
+
 ## Quick start
 
 Requires Python 3.12+. No database server, no Docker, nothing else.
@@ -310,6 +354,7 @@ metrics, and quality scoring — until you stop it with Ctrl-C.
 | `mie backtest BTC` | Walk-forward folds with a leakage probe on every model. |
 | `mie predict BTC` | Record predictions for later scoring, before outcomes exist. |
 | `mie learn` | Resolve, measure, reweight — and say whether anything changed. |
+| `mie serve` | The read-only API and dashboard on http://127.0.0.1:8000. |
 
 ---
 
@@ -378,6 +423,7 @@ rather than buried.
 | Does any model read the future? | **No** — and this is tested, not assumed. A deliberately leaky pipeline is caught; the same model on a clean pipeline is not. Four of eight models come back `INCONCLUSIVE` rather than `CLEAN`, because they abstain and so cannot be tested at all. |
 | Does the learning loop learn anything? | **Partly, and not the part that matters.** Over 8,100 resolved predictions it granted **0** of 160 weight slices a non-zero weight, and adopted **6** of 42 calibration curves. It learned that six forecasters are miscalibrated in specific regimes — including climatology in downtrends — not that any model is worth trusting. |
 | What is the single clearest measured result? | **Saying nothing beats climatology, and climatology beats every opinion.** The three best forecasters by Brier score exactly 0.6667 — the uniform distribution — because they abstain on every point. |
+| What does the dashboard show? | **"Insufficient evidence", with the specific conditions that failed.** Three of the super-prediction gate's nine conditions pass; the rest are reported with their numbers. That is the honest rendering of everything above. |
 
 What *does* survive measurement is volatility clustering: volume spikes and range
 compression genuinely precede larger-than-usual movement. They say nothing about

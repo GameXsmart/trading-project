@@ -119,9 +119,9 @@ Chosen per workload, not per fashion.
 │   ├── ensemble/      # calibration, agreement, confidence, super-prediction gate
 │   ├── backtest/      # purged folds, leakage probe, survivorship
 │   ├── learning/      # prediction store, resolver, sliced metrics, reweighting
-│   ├── api/           # (Phase 10) FastAPI service
+│   ├── api/           # read-only FastAPI service + the dashboard it serves
 │   └── alerts/        # (Phase 11) alert rules + channels
-├── apps/dashboard/    # (Phase 10) Next.js
+│       └── static/    # the dashboard page (no build step; see PHASES.md)
 ├── config/            # default.yaml, assets.yaml — no secrets
 ├── sql/               # TimescaleDB-specific DDL
 ├── tests/             # unit + integration
@@ -331,7 +331,12 @@ read as if it were meaningful.
   Providers use **public, read-only endpoints**; where a key is ever needed it must be
   read-only and supplied via environment variable.
 - Outputs are probabilistic scenarios, never guarantees, and the UI is required to
-  render probability, confidence and invalidation conditions together.
+  render probability, confidence and invalidation conditions together. **Phase 10 moved
+  this from a UI requirement into the API contract**: a directional payload cannot be
+  constructed without a confidence decomposition and at least one invalidation
+  condition, so no present or future interface can render one without them. Two tests
+  assert the absence side of this boundary directly — no route accepts a mutating HTTP
+  method, and no route path names an execution concept.
 - This is not investment advice, and nothing in the system may phrase it as such.
 
 ---
@@ -342,9 +347,9 @@ Phases are gated: a phase ships only when the previous one is correct and tested
 See [`docs/PHASES.md`](docs/PHASES.md) for the gate criteria of each.
 **Phases 1 (ingestion + database), 2 (feature engine), 3 (multi-timeframe state),
 4 (pattern and sequence discovery), 5 (news intelligence), 6 (prediction models),
-7 (ensemble, calibration, confidence), 8 (walk-forward backtesting) and 9
-(self-evaluation and learning) are implemented.** Phases 10+ are designed above and
-not yet built.
+7 (ensemble, calibration, confidence), 8 (walk-forward backtesting), 9
+(self-evaluation and learning) and 10 (API and dashboard) are implemented.** Phases 11+
+are designed above and not yet built.
 
 **Measured result so far: no model beats a climatology baseline** — verified across 48
 configurations spanning forecast reaches from 3 hours to 60 days, 2,032 slices, none

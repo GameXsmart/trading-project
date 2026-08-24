@@ -21,6 +21,8 @@ dependencies = [
     "rich>=13.7",
     "pyyaml>=6.0",
     "tenacity>=8.3",
+    "fastapi>=0.115",
+    "uvicorn[standard]>=0.30",
 ]
 
 [project.optional-dependencies]
@@ -39,6 +41,10 @@ dev = [
 
 [project.scripts]
 mie = "mie.cli:main"
+
+[tool.setuptools.package-data]
+# The dashboard is served from the installed package, so it has to ship with it.
+mie = ["api/static/*.html"]
 
 [tool.setuptools.packages.find]
 where = ["src"]

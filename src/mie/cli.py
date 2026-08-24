@@ -27,6 +27,7 @@ and nothing here contains logic of its own.
     mie backtest BTC                  walk-forward folds with a leakage probe
     mie predict BTC                   record predictions for later scoring
     mie learn                         resolve, measure, reweight - and say what changed
+    mie serve                         the read-only API and dashboard
 """
 
 from __future__ import annotations
@@ -1727,6 +1728,33 @@ def _row_to_outcome(row) -> ResolvedOutcome:
         correct=row.correct,
         probability_of_truth=row.probability_of_truth,
         scored_at=row.scored_at,
+    )
+
+
+@app.command("serve")
+def serve(
+    host: str = typer.Option("127.0.0.1", "--host"),
+    port: int = typer.Option(8000, "--port"),
+    reload: bool = typer.Option(False, "--reload"),
+) -> None:
+    """Serve the read-only API and dashboard.
+
+    Binds to localhost by default. The service is analytical and holds no trading
+    keys, but a market-analysis endpoint is still not something to expose publicly
+    without deciding to.
+    """
+    import uvicorn
+
+    console.print(f"[bold]dashboard[/bold]  http://{host}:{port}/")
+    console.print(f"[dim]openapi[/dim]    http://{host}:{port}/docs")
+    console.print("[dim]read-only: no endpoint mutates market state or places orders[/dim]")
+    uvicorn.run(
+        "mie.api.app:create_app",
+        host=host,
+        port=port,
+        reload=reload,
+        factory=True,
+        log_level="info",
     )
 
 
