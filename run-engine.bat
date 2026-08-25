@@ -34,38 +34,13 @@ echo   =================================
 echo.
 
 rem --- Python and virtual environment -------------------------------------
-if not exist "%PY%" (
-    echo   No virtual environment found. Creating one...
-    set "LAUNCHER="
-    where py >nul 2>&1 && set "LAUNCHER=py -3"
-    if not defined LAUNCHER where python >nul 2>&1 && set "LAUNCHER=python"
-    if not defined LAUNCHER (
-        echo.
-        echo   [!] Python is not installed, or not on PATH.
-        echo       Install Python 3.12 or newer from https://python.org
-        echo       and tick "Add python.exe to PATH" during setup.
-        echo.
-        pause
-        exit /b 1
-    )
-    %LAUNCHER% -m venv "%~dp0.venv"
-    if not exist "%PY%" (
-        echo   [!] Could not create the virtual environment.
-        pause
-        exit /b 1
-    )
-    echo   Installing dependencies. This takes a minute the first time...
-    "%PY%" -m pip install --upgrade pip --quiet
-    "%PY%" -m pip install -e ".[dev]" --quiet
-    if errorlevel 1 (
-        echo.
-        echo   [!] Dependency install failed. Run this to see why:
-        echo       "%PY%" -m pip install -e ".[dev]"
-        echo.
-        pause
-        exit /b 1
-    )
-)
+rem  Done in a subroutine rather than inside an if-block. Batch expands %VAR%
+rem  when it *parses* a parenthesised block, not when it runs, so a variable set
+rem  inside the block is still empty by the time a later line in the same block
+rem  uses it. That turned the venv command into " -m venv" and the first-run
+rem  path failed for everyone who did not already have a virtual environment.
+if not exist "%PY%" call :setup
+if not exist "%PY%" exit /b 1
 
 rem --- Database schema. Idempotent, safe on every launch. ------------------
 echo   Preparing the database...
@@ -120,3 +95,56 @@ echo   ---------------------------------------------------------------
 echo.
 "%TIMEOUT%" /t 20 /nobreak
 endlocal
+exit /b 0
+
+
+rem ===========================================================================
+rem  First-run setup: create the virtual environment and install dependencies.
+rem ===========================================================================
+:setup
+echo   No virtual environment found. Setting one up.
+echo.
+
+set "LAUNCHER="
+where py >nul 2>&1 && set "LAUNCHER=py -3"
+if not defined LAUNCHER (
+    where python >nul 2>&1 && set "LAUNCHER=python"
+)
+if not defined LAUNCHER (
+    echo   [!] Python is not installed, or is not on PATH.
+    echo.
+    echo       Install Python 3.12 or newer from https://python.org
+    echo       During setup, tick "Add python.exe to PATH" - the installer
+    echo       leaves it unticked by default, and without it this cannot
+    echo       find Python.
+    echo.
+    pause
+    exit /b 1
+)
+
+echo   Creating the environment with: %LAUNCHER%
+%LAUNCHER% -m venv "%~dp0.venv"
+if not exist "%PY%" (
+    echo.
+    echo   [!] Could not create the virtual environment. Try running this
+    echo       by hand to see the error:
+    echo         %LAUNCHER% -m venv ".venv"
+    echo.
+    pause
+    exit /b 1
+)
+
+echo   Installing dependencies. A few minutes the first time.
+"%PY%" -m pip install --upgrade pip --quiet
+"%PY%" -m pip install -e ".[dev]" --quiet
+if errorlevel 1 (
+    echo.
+    echo   [!] Dependency install failed. Run this to see why:
+    echo         "%PY%" -m pip install -e ".[dev]"
+    echo.
+    pause
+    exit /b 1
+)
+echo   Environment ready.
+echo.
+exit /b 0
