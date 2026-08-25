@@ -393,6 +393,12 @@ opens three windows:
 | **MIE dashboard** | The read-only UI on http://127.0.0.1:8000 |
 | **MIE cycle** | Records predictions hourly, resolves them, reports what was learned |
 
+**`share.bat`** puts the dashboard on a public HTTPS address so you can send someone a
+link. It uses a Cloudflare tunnel: no account, no port forwarding, no firewall change, and
+your home IP is never exposed. The address changes each run, the link is the only access
+control, and visitors can only read — every write method returns 405, because no route
+writes anything.
+
 **`stop-engine.bat`** stops all three. Stored data is untouched, and no prediction
 already recorded can be revised.
 

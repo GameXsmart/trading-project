@@ -383,6 +383,7 @@
       <li><a href="#routine">What to do, and when</a></li>
       <li><a href="#results">What the results mean</a></li>
       <li><a href="#alerts">Alerts</a></li>
+      <li><a href="#share">Sharing it publicly</a></li>
       <li><a href="#trouble">When something breaks</a></li>
       <li><a href="#limits">Limits and safety</a></li>
     </ol>
@@ -836,8 +837,43 @@
     </section>
 
     <!-- 10 -->
+    <section id="share">
+      <h2><span class="num">10</span> Sharing it publicly</h2>
+      <p class="section-note">Give someone a link to your running dashboard, without opening your router.</p>
+
+      <p>Double-click <strong><code>share.bat</code></strong> while the engine is running. It
+        prints a public HTTPS address you can send to anyone.</p>
+
+      <p>It works by opening a connection <em>outward</em> to Cloudflare, which then forwards
+        visitors down that connection. Nothing listens on your router, no ports are opened, and
+        your home IP address is never revealed — visitors only ever see Cloudflare.</p>
+
+      <div class="table-wrap">
+        <table>
+          <thead><tr><th>Point</th><th>What it means for you</th></tr></thead>
+          <tbody>
+            <tr><td>The link changes</td><td>Every run gives a new address. Re-send it, or set up a Cloudflare account for a fixed one.</td></tr>
+            <tr><td>Laptop must be on</td><td>The link dies when you close the tunnel window, stop the dashboard, or shut down.</td></tr>
+            <tr><td>The link is the password</td><td>There is no login. Anyone who has it can open it, so only send it to people you meant to.</td></tr>
+            <tr><td>Visitors can only read</td><td>Every attempt to change something returns <em>405 Method Not Allowed</em>. The service has no route that writes anything.</td></tr>
+          </tbody>
+        </table>
+      </div>
+
+      <div class="callout amber">
+        <span class="tag">Worth knowing before you share</span>
+        <p>
+          Anyone opening that link sees market analysis, not anything personal — there are no
+          accounts, no keys and no private data in it. But it is a program running on your own
+          laptop, reachable from the internet for as long as the tunnel is open. Close the tunnel
+          window when you are done, rather than leaving it up indefinitely.
+        </p>
+      </div>
+    </section>
+
+    <!-- 11 -->
     <section id="trouble">
-      <h2><span class="num">10</span> When something breaks</h2>
+      <h2><span class="num">11</span> When something breaks</h2>
       <p class="section-note">The failures you're most likely to hit.</p>
 
       <div class="table-wrap">
@@ -856,9 +892,9 @@
       </div>
     </section>
 
-    <!-- 11 -->
+    <!-- 12 -->
     <section id="limits">
-      <h2><span class="num">11</span> Limits and safety</h2>
+      <h2><span class="num">12</span> Limits and safety</h2>
       <p class="section-note">What it can't do, and what it will never do.</p>
 
       <h3>What it cannot tell you</h3>
